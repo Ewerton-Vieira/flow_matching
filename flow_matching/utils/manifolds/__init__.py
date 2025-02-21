@@ -7,6 +7,7 @@
 from .manifold import Euclidean, Manifold
 from .sphere import Sphere
 from .torus import FlatTorus
+from .product import Product
 from .utils import geodesic
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "Sphere",
     "FlatTorus",
     "geodesic",
+    "Product"
 ]
