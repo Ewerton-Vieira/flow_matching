@@ -82,6 +82,10 @@ class GeodesicProbPath(ProbPath):
             PathSample: A conditional sample at :math:`X_t \sim p_t`.
         """
         self.assert_sample_shape(x_0=x_0, x_1=x_1, t=t)
+
+        t_original = t  # save the original shape to give as input to PathSample
+
+        # expand t for geodesic path on manifold, see geodesic in flow_matching.utils.manifolds
         t = expand_tensor_like(input_tensor=t, expand_to=x_1[..., 0:1]).clone()
 
         def cond_u(x_0, x_1, t):
@@ -94,7 +98,8 @@ class GeodesicProbPath(ProbPath):
             return x_t, dx_t
 
         x_t, dx_t = vmap(cond_u)(x_0, x_1, t)
+
         x_t = x_t.reshape_as(x_1)
         dx_t = dx_t.reshape_as(x_1)
 
-        return PathSample(x_t=x_t, dx_t=dx_t, x_1=x_1, x_0=x_0, t=t)
+        return PathSample(x_t=x_t, dx_t=dx_t, x_1=x_1, x_0=x_0, t=t_original)
