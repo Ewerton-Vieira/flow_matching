@@ -12,7 +12,6 @@ from .solver import Solver
 __all__ = [
     "ODESolver",
     "Solver",
-    "ModelWrapper",
     "MixtureDiscreteEulerSolver",
     "RiemannianODESolver",
 ]

@@ -5,55 +5,90 @@
 
 import torch
 from torch import Tensor
+from typing import List, Tuple, Any
+import warnings
+from flow_matching.utils.manifolds import Euclidean, Sphere, FlatTorus, Manifold
 
-from flow_matching.utils.manifolds import Euclidean, Sphere, FlatTorus
-from flow_matching.utils.manifolds import Manifold as Manifold1
+class Product(Manifold):
+    """The product of manifolds: Sphere, Torus and Euclidean."""
 
-class Product(Manifold1):
-    """The product of manifolds, Sphere, Torus and Euclidean."""
-
-    def __init__(self, sphere_dim = 0, torus_dim = 0, euclidean_dim = 0):
+    def __init__(self, input_dim: int, manifolds: List[Tuple[Manifold, int]] = None):
+        """
+        Initialize a product manifold with arbitrary ordering and dimensions.
+        
+        Args:
+            input_dim: Total dimensionality of the space
+            manifolds: List of tuples (manifold, dimension) where manifold is a Manifold object and dimension is an integer
+                       Default is None, which will use Euclidean space for all dimensions
+        """
         super().__init__()
-        self.sphere = Sphere()
-        self.torus = FlatTorus()
-        self.euclidean = Euclidean()
-        self.sphere_dim = sphere_dim
-        self.torus_dim = torus_dim
-        self.euclidean_dim = euclidean_dim
+        
+        # Store manifolds and dimensions as lists
+        self.manifolds: List[Manifold] = []
+        self.dimensions: List[int] = []
+        
+        # If manifolds is None or empty, use Euclidean space for all dimensions
+        if manifolds is None or len(manifolds) == 0:
+            self.manifolds.append(Euclidean())
+            self.dimensions.append(input_dim)
+        else:
+            # Otherwise use the provided manifolds
+            for manifold, dim in manifolds:
+                self.manifolds.append(manifold)
+                self.dimensions.append(dim)
 
-    def split(self, x: Tensor) -> Tensor:
-        return torch.split(x, [self.sphere_dim, self.torus_dim, self.euclidean_dim], dim=-1)
+        if len(self.manifolds) > 50:
+            warnings.warn("Product manifold has more than 50 manifolds. This may lead to performance issues.")
+
+    def split(self, x: Tensor) -> List[Tensor]:
+        """Split input tensor according to manifold dimensions"""
+        return torch.split(x, self.dimensions, dim=-1)
 
     def expmap(self, x: Tensor, u: Tensor) -> Tensor:
         tensors_x = self.split(x)
         tensors_u = self.split(u)
-        exp = (self.sphere.expmap(tensors_x[0], tensors_u[0]), self.torus.expmap(tensors_x[1], tensors_u[1]), 
-               self.euclidean.expmap(tensors_x[2], tensors_u[2]))
-        return torch.cat(exp, dim=-1)
+        
+        results = []
+        for i, manifold in enumerate(self.manifolds):
+            results.append(manifold.expmap(tensors_x[i], tensors_u[i]))
+            
+        return torch.cat(results, dim=-1)
 
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
         tensors_x = self.split(x)
         tensors_y = self.split(y)
-        log = (self.sphere.logmap(tensors_x[0], tensors_y[0]), self.torus.logmap(tensors_x[1], tensors_y[1]), 
-               self.euclidean.logmap(tensors_x[2], tensors_y[2]))
-        return torch.cat(log, dim=-1)
+        
+        results = []
+        for i, manifold in enumerate(self.manifolds):
+            results.append(manifold.logmap(tensors_x[i], tensors_y[i]))
+            
+        return torch.cat(results, dim=-1)
 
     def projx(self, x: Tensor) -> Tensor:
         tensors_x = self.split(x)
-        proj = (self.sphere.projx(tensors_x[0]), self.torus.projx(tensors_x[1]), 
-               self.euclidean.projx(tensors_x[2]))
-        return torch.cat(proj, dim=-1)
+        
+        results = []
+        for i, manifold in enumerate(self.manifolds):
+            results.append(manifold.projx(tensors_x[i]))
+            
+        return torch.cat(results, dim=-1)
 
     def proju(self, x: Tensor, u: Tensor) -> Tensor:
         tensors_x = self.split(x)
         tensors_u = self.split(u)
-        proj = (self.sphere.proju(tensors_x[0], tensors_u[0]), self.torus.proju(tensors_x[1], tensors_u[1]), 
-               self.euclidean.proju(tensors_x[2], tensors_u[2]))
-        return torch.cat(proj, dim=-1)
+        
+        results = []
+        for i, manifold in enumerate(self.manifolds):
+            results.append(manifold.proju(tensors_x[i], tensors_u[i]))
+            
+        return torch.cat(results, dim=-1)
     
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
         tensors_x = self.split(x)
         tensors_y = self.split(y)
-        d = (self.sphere.dist(tensors_x[0], tensors_y[0]), self.torus.dist(tensors_x[1], tensors_y[1]), 
-               self.euclidean.dist(tensors_x[2], tensors_y[2]))
-        return torch.norm(d)
+        
+        distances = []
+        for i, manifold in enumerate(self.manifolds):
+            distances.append(manifold.dist(tensors_x[i], tensors_y[i]))
+            
+        return torch.norm(torch.stack(distances), dim=0)

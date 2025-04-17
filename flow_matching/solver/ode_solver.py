@@ -70,7 +70,7 @@ class ODESolver(Solver):
             method (str): A method supported by torchdiffeq. Defaults to "euler". Other commonly used solvers are "dopri5", "midpoint" and "heun3". For a complete list, see torchdiffeq.
             atol (float): Absolute tolerance, used for adaptive step solvers.
             rtol (float): Relative tolerance, used for adaptive step solvers.
-            time_grid (Tensor): The process is solved in the interval [min(time_grid, max(time_grid)] and if step_size is None then time discretization is set by the time grid. May specify a descending time_grid to solve in the reverse direction. Defaults to torch.tensor([0.0, 1.0]).
+            time_grid (Tensor): The process is solved in the interval [min(time_grid), max(time_grid)] and if step_size is None then time discretization is set by the time grid. May specify a descending time_grid to solve in the reverse direction. Defaults to torch.tensor([0.0, 1.0]).
             return_intermediates (bool, optional): If True then return intermediate time steps according to time_grid. Defaults to False.
             enable_grad (bool, optional): Whether to compute gradients during sampling. Defaults to False.
             **model_extras: Additional input for the model.
