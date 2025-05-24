@@ -40,6 +40,6 @@ class Sphere(Manifold):
     def proju(self, x: Tensor, u: Tensor) -> Tensor:
         return u - (x * u).sum(dim=-1, keepdim=True) * x
 
-    def dist(self, x: Tensor, y: Tensor, *, keepdim=False) -> Tensor:
-        inner = (x * y).sum(-1, keepdim=keepdim)
+    def dist(self, x: Tensor, y: Tensor) -> Tensor:
+        inner = (x * y).sum(-1, keepdim=True)
         return torch.acos(inner)

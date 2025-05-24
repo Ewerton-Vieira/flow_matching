@@ -90,5 +90,5 @@ class Product(Manifold):
         distances = []
         for i, manifold in enumerate(self.manifolds):
             distances.append(manifold.dist(tensors_x[i], tensors_y[i]))
-            
-        return torch.norm(torch.stack(distances), dim=0)
+
+        return torch.cat(distances, dim=-1)

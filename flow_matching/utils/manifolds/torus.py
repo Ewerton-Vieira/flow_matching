@@ -30,4 +30,4 @@ class FlatTorus(Manifold):
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
         delta = torch.abs(x - y)  # Euclidean difference
         delta_torus = torch.minimum(delta, 2 * math.pi - delta)  # Apply periodic wrapping
-        return torch.norm(delta_torus)  # Compute Euclidean norm
+        return torch.abs(delta_torus)  # Compute Euclidean norm

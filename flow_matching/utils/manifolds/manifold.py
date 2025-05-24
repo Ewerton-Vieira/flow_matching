@@ -75,7 +75,22 @@ class Manifold(nn.Module, metaclass=abc.ABCMeta):
             Tensor: projected tangent vector
         """
         raise NotImplementedError
+    
+    @abc.abstractmethod
+    def dist(self, x: Tensor, y: Tensor) -> Tensor:
+        """Compute the distance between two points on the manifold.
+        
+        Args:
+            x (Tensor): point on the manifold
+            y (Tensor): point on the manifold
 
+        Raises:
+            NotImplementedError: if not implemented
+
+        Returns:
+            Tensor: distance between the two points
+        """
+        raise NotImplementedError
 
 class Euclidean(Manifold):
     """The Euclidean manifold."""
@@ -93,4 +108,4 @@ class Euclidean(Manifold):
         return u
     
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
-        return norm(x - y, p=2)
+        return norm(x - y, p=2, dim=-1, keepdim=True)
