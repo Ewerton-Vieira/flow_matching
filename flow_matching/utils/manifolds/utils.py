@@ -37,13 +37,7 @@ def geodesic(
         Returns:
             Tensor: geodesic path evaluated at time t.
         """
-        # print(t, shooting_tangent_vec)
-        # breakpoint()
-        # # t = t.squeeze()
-        # breakpoint()
-        # tangent_vecs = torch.einsum("i,...k->...ik", t, shooting_tangent_vec)
         tangent_vecs = torch.einsum("...i, ...k -> ...ik", t, shooting_tangent_vec)
-        # breakpoint()
         points_at_time_t = manifold.expmap(start_point.unsqueeze(-2), tangent_vecs)
 
         return points_at_time_t

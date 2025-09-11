@@ -41,5 +41,5 @@ class Sphere(Manifold):
         return u - (x * u).sum(dim=-1, keepdim=True) * x
 
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
-        inner = (x * y).sum(-1, keepdim=True)
+        inner = (x * y).sum(-1, keepdim=True).clamp_min(self.EPS[x.dtype])
         return torch.acos(inner)
