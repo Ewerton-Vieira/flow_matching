@@ -1,10 +1,10 @@
 # so3.py
 # SO(3) manifold represented with unit quaternions (S^3 / {±1}).
-# Mirrors the API used by Sphere/Torus/Manifold.
 
 import torch
 from torch import Tensor
 
+from collections import defaultdict
 from flow_matching.utils.manifolds import Manifold
 
 
@@ -24,28 +24,38 @@ class SO3(Manifold):
     - Distance: d(R1, R2) = 2 * acos(|<q1, q2>|) ∈ [0, π].
     """
 
-    EPS = {torch.float32: 1e-6, torch.float64: 1e-9}
+    EPS = defaultdict(lambda: 1e-6, {
+        torch.float16: 1e-4,
+        torch.bfloat16: 1e-4,
+        torch.float32: 1e-6,
+        torch.float64: 1e-9,
+    })
+
+    @staticmethod
+    def product(q1: Tensor, q2: Tensor) -> Tensor:
+        """Hamilton product, scalar-first [w, x, y, z], vectorized."""
+        w1 = q1[..., :1]
+        v1 = q1[..., 1:]
+        w2 = q2[..., :1]
+        v2 = q2[..., 1:]
+        w = w1 * w2 - (v1 * v2).sum(dim=-1, keepdim=True)
+        v = w1 * v2 + w2 * v1 + torch.cross(v1, v2, dim=-1)
+        return torch.cat([w, v], dim=-1)
+
+
+    @staticmethod
+    def _qconj(q: Tensor) -> Tensor:
+        """Quaternion conjugate [w, x, y, z] -> [w, -x, -y, -z]."""
+        return torch.stack((q[..., 0], -q[..., 1], -q[..., 2], -q[..., 3]), dim=-1)
 
     @staticmethod
     def from_euler(angles: Tensor, order: str = "zyx", degrees: bool = False) -> Tensor:
         """
         Convert Euler angles to a unit quaternion [qw, qx, qy, qz].
 
-        Parameters
-        ----------
-        angles : Tensor
-            Tensor of shape (..., 3). Interpretation depends on `order`:
-            - order='zyx': angles = [yaw(z), pitch(y), roll(x)]
-            - order='xyz': angles = [roll(x), pitch(y), yaw(z)]
-        order : str
-            Either 'zyx' (yaw–pitch–roll) or 'xyz' (roll–pitch–yaw).
-        degrees : bool
-            If True, `angles` are in degrees. Otherwise radians.
-
-        Returns
-        -------
-        q : Tensor
-            Unit quaternion of shape (..., 4) with canonical sign (qw ≥ 0).
+        angles: (..., 3)
+          - order='zyx': [yaw(z), pitch(y), roll(x)]
+          - order='xyz': [roll(x), pitch(y), yaw(z)]
         """
         if angles.shape[-1] != 3:
             raise ValueError("angles must have shape (..., 3)")
@@ -54,101 +64,149 @@ class SO3(Manifold):
             angles = angles * (torch.pi / 180.0)
 
         order = order.lower()
-
-        # Unpack to (roll, pitch, yaw) regardless of input order
         if order == "zyx":
-            yaw, pitch, roll = angles.unbind(dim=-1)   # [ψ, θ, φ]
-        elif order == "xyz":  # 'xyz'
-            roll, pitch, yaw = angles.unbind(dim=-1)   # [φ, θ, ψ]
+            yaw, pitch, roll = angles.unbind(-1)
+        elif order == "xyz":
+            roll, pitch, yaw = angles.unbind(-1)
         else:
             raise ValueError("order must be 'zyx' or 'xyz'")
 
         half = 0.5
-        hr = roll * half
-        hp = pitch * half
-        hy = yaw * half
+        hr, hp, hy = roll*half, pitch*half, yaw*half
 
-        cr = torch.cos(hr)
-        sr = torch.sin(hr)
-        cp = torch.cos(hp)
-        sp = torch.sin(hp)
-        cy = torch.cos(hy)
-        sy = torch.sin(hy)
+        sr, cr = torch.sin(hr), torch.cos(hr)
+        sp, cp = torch.sin(hp), torch.cos(hp)
+        sy, cy = torch.sin(hy), torch.cos(hy)
+        zeros_like_hr, zeros_like_hp, zeros_like_hy = torch.zeros_like(hr), torch.zeros_like(hp), torch.zeros_like(hy)
 
-        # Standard yaw–pitch–roll (Z-Y-X) closed form (works given (roll,pitch,yaw) above)
-        qw = cy*cp*cr + sy*sp*sr
-        qx = cy*cp*sr - sy*sp*cr
-        qy = cy*sp*cr + sy*cp*sr
-        qz = sy*cp*cr - cy*sp*sr
 
-        q = torch.stack((qw, qx, qy, qz), dim=-1)
+        # Axis half-angle quaternions
+        qx = torch.stack((cr, sr, zeros_like_hr, zeros_like_hr), dim=-1)
+        qy = torch.stack((cp, zeros_like_hp, sp, zeros_like_hp), dim=-1)
+        qz = torch.stack((cy, zeros_like_hy, zeros_like_hy, sy), dim=-1)
 
-        # Normalize and canonicalize (qw ≥ 0)
-        eps = 1e-9 if q.dtype == torch.float64 else 1e-6
+        # Compose in the requested order: q_total = q_axisN ⊗ ... ⊗ q_axis1
+        if order == "zyx":
+            q = SO3.product(SO3.product(qz, qy), qx)  # R = Rz * Ry * Rx
+        else:  # 'xyz'
+            q = SO3.product(SO3.product(qx, qy), qz)  # R = Rx * Ry * Rz
+
+        # Normalize and canonicalize
+        eps = SO3.EPS[q.dtype]
         q = q / q.norm(dim=-1, keepdim=True).clamp_min(eps)
-        flip = (q[..., :1] < 0).to(q.dtype) * -2.0 + 1.0  # -1 if qw<0 else +1
-        q = q * torch.cat([flip, flip, flip, flip], dim=-1)
-        return q
-
+        return SO3.canon(q)
+        
     @staticmethod
-    def _canon(q: Tensor) -> Tensor:
-        """Canonical representative with non-negative scalar part (qw >= 0)."""
-        # q shape (..., 4) with scalar part first: [qw, qx, qy, qz]
-        flip = (q[..., :1] < 0).to(q.dtype) * -2.0 + 1.0  # -1 if qw<0 else +1
-        return q * torch.cat([flip, flip, flip, flip], dim=-1)
+    def canon(q: Tensor) -> Tensor:
+        """
+        Canonical representative with stable tie-break:
+        1) If |qw| > eps or qw < 0: ensure qw >= 0
+        2) Else (qw ≈ 0 and qw > 0): ensure the largest-magnitude component among (qx,qy,qz) is >= 0
+        This guarantees projx(q) == projx(-q).
+        """
+        eps = SO3.EPS[q.dtype]
+        qw = q[..., :1]
+        qv = q[..., 1:]
+        use_qw = (qw.abs() > eps)
+        flip_qw = torch.where(qw < 0, -1.0, 1.0).to(q.dtype)
+        idx = qv.abs().argmax(dim=-1, keepdim=True)
+        max_comp = qv.gather(-1, idx)
+        flip_v = torch.where(max_comp < 0, -1.0, 1.0).to(q.dtype)
+        flip = torch.where(use_qw, flip_qw, flip_v)             # (...,1)
+        return q * flip 
 
-    def expmap(self, x: Tensor, u: Tensor) -> Tensor:
-        """Exponential map on SO(3) at quaternion x along tangent u (both (...,4))."""
-        eps = self.EPS[x.dtype]
-        # Ensure valid base point and tangent
-        x = x / x.norm(dim=-1, keepdim=True).clamp_min(eps)
-        u = self.proju(x, u)
-
-        theta = u.norm(dim=-1, keepdim=True).clamp_min(eps)
-        s = torch.sin(theta) / theta
-        y = torch.cos(theta) * x + s * u
-        y = y / y.norm(dim=-1, keepdim=True).clamp_min(eps)
-        return self._canon(y)
 
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
-        """Logarithm map on SO(3) at quaternion x toward quaternion y (both (...,4))."""
+        """
+        Lie-algebra (so(3)) log map with small-angle series for stability.
+        Returns rotation vector ω with ||ω|| = angle ∈ [0, π].
+        """
         eps = self.EPS[x.dtype]
-        x = x / x.norm(dim=-1, keepdim=True).clamp_min(eps)
-        y = y / y.norm(dim=-1, keepdim=True).clamp_min(eps)
 
-        # Choose y (or -y) giving the shortest geodesic from x
-        inner = (x * y).sum(dim=-1, keepdim=True)
-        y = torch.where(inner < 0, -y, y)
-        inner = (x * y).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+        # Normalize + canonicalize inputs
+        x = self.projx(x)
+        y = self.projx(y)
 
-        # Tangent direction on S^3 orthogonal to x
-        v = y - inner * x
-        v_norm = v.norm(dim=-1, keepdim=True).clamp_min(eps)
+        # Relative quaternion Δ = x* ⊗ y, flip to shortest arc (Δ.w ≥ 0)
+        Delta = self.product(self._qconj(x), y)
+        Delta = torch.where(Delta[..., :1] < 0, -Delta, Delta)
 
-        # Angle on S^3 is alpha ∈ [0, π/2]; SO(3) angle is 2*alpha
-        alpha = torch.acos(inner)  # (...,1)
-        u = v / v_norm * (2.0 * alpha)
+        w = Delta[..., 0:1]           # scalar part
+        v = Delta[..., 1:]            # vector part (...,3)
+        s = v.norm(dim=-1, keepdim=True)  # ||v|| = sin(φ/2)
 
-        # First-order fallback for near-coincident points
-        u = torch.where((alpha < 1e-6).expand_as(u), 2.0 * (y - x), u)
+        # ---- Small-angle series branch (about s = 0) ----
+        # φ/s = 2 + (1/3)s^2 + (3/20)s^4 + (5/56)s^6 + ...
+        s2 = s * s
+        scale_series = (2.0
+                        + (1.0/3.0) * s2
+                        + (3.0/20.0) * s2 * s2
+                        + (5.0/56.0) * s2 * s2 * s2)
 
-        # Ensure it's in the tangent space numerically
-        return self.proju(x, u)
+        # ---- General branch (stable everywhere) ----
+        # φ = 2 * atan2(s, w); ω = (φ/s) v, with safe s→0 handling
+        phi = 2.0 * torch.atan2(s, w.clamp_min(eps))
+        scale_general = torch.where(s > eps, phi / s, torch.zeros_like(s))
+
+        # Threshold for switching to series (tuned per dtype)
+        # s ≈ sin(φ/2); s < 1e-4 is very small rotation for fp32/bfloat16.
+        s_thresh = min(eps * 1e3, 1e-4)
+
+        scale = torch.where(s < s_thresh, scale_series, scale_general)
+
+        # ω = scale * v (note: if s=0 then v=0 → ω=0)
+        omega = scale * v
+        return omega
+
+    def expmap(self, x: Tensor, omega: Tensor) -> Tensor:
+        """
+        Lie-algebra (so(3)) exp map: apply rotation vector ω at base x.
+        Input: x (...,4), ω (...,3) with ||ω|| = angle.
+        Output: y (...,4) quaternion (canonicalized).
+        """
+        eps = self.EPS[x.dtype]
+        x = self.projx(x)
+        phi = omega.norm(dim=-1, keepdim=True)   # angle
+        half = 0.5 * phi
+
+        # Unit axis (where defined)
+        a = torch.where(phi > eps, omega / phi, torch.zeros_like(omega))
+
+        # Increment quaternion δ = [cos(φ/2), a*sin(φ/2)]
+        c = torch.cos(half)
+        s = torch.sin(half)
+        delta = torch.cat([c, s * a], dim=-1)    # (...,4)
+
+        y = self.product(x, delta)
+        return self.projx(y)
 
     def projx(self, x: Tensor) -> Tensor:
-        """Project a 4D vector to a unit quaternion with canonical sign (qw ≥ 0)."""
+        """Unit + canonical sign (qw ≥ 0) with rsqrt normalization."""
         eps = self.EPS[x.dtype]
-        x = x / x.norm(dim=-1, keepdim=True).clamp_min(eps)
-        return self._canon(x)
+        inv_norm = torch.rsqrt((x * x).sum(dim=-1, keepdim=True).clamp_min(eps * eps))
+        q = x * inv_norm
+        return self.canon(q)
 
     def proju(self, x: Tensor, u: Tensor) -> Tensor:
-        """Project a 4D vector to the tangent space at x (orthogonal component)."""
-        return u - (x * u).sum(dim=-1, keepdim=True) * x
+        """
+        Projects a 3D vector to the tangent space at x (orthogonal component).
+        But here the projection at x is the same as the input vector.
+        """
+        return u
 
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
-        """Geodesic distance on SO(3): 2*acos(|<x,y>|) ∈ [0, π]."""
+        """Stable geodesic distance on SO(3) using relative quaternion and atan2."""
         eps = self.EPS[x.dtype]
-        x = x / x.norm(dim=-1, keepdim=True).clamp_min(eps)
-        y = y / y.norm(dim=-1, keepdim=True).clamp_min(eps)
-        inner = (x * y).sum(dim=-1, keepdim=True).abs().clamp_max(1.0)
-        return 2.0 * torch.acos(inner)
+        x = self.projx(x)
+        y = self.projx(y)
+
+        Delta = self.product(self._qconj(x), y)                  # Δ = x* ⊗ y
+        Delta = torch.where(Delta[..., :1] < 0, -Delta, Delta) # enforce shortest: Δ.w ≥ 0
+
+        w = Delta[..., 0:1].clamp(-1.0, 1.0)
+        v = Delta[..., 1:]
+        s = v.norm(dim=-1, keepdim=True)
+
+        # φ = 2 * atan2(‖v‖, w) ∈ [0, π]
+        phi = 2.0 * torch.atan2(s, w.clamp_min(eps))
+        return phi

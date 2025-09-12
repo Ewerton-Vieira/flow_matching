@@ -12,6 +12,9 @@ from torch import Tensor, norm
 
 class Manifold(nn.Module, metaclass=abc.ABCMeta):
     """A manifold class that contains projection operations and logarithm and exponential maps."""
+    def canon(self, x: Tensor) -> Tensor:
+        """Canonical representative of the point on the manifold."""
+        return x
 
     @abc.abstractmethod
     def expmap(self, x: Tensor, u: Tensor) -> Tensor:
