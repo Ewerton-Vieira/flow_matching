@@ -174,6 +174,64 @@ class TestProductManifold(unittest.TestCase):
             self.assertTrue(torch.allclose(dt1, expected_dt1, atol=1e-5))
 
 
+class TestProductManifoldVectorizedConsistency(unittest.TestCase):
+    def test_grouped_vs_interleaved_equivalence(self):
+        prod_inter = Product(
+            input_dim=4,
+            manifolds=[
+                (FlatTorus(), 1),
+                (Euclidean(), 1),
+                (FlatTorus(), 1),
+                (Euclidean(), 1),
+            ],
+        )
+        prod_grouped = Product(
+            input_dim=4,
+            manifolds=[
+                (FlatTorus(), 1),
+                (FlatTorus(), 1),
+                (Euclidean(), 1),
+                (Euclidean(), 1),
+            ],
+        )
+
+        x = torch.tensor([
+            [3 * math.pi + 0.2, 5.0, -math.pi / 2, -2.0],
+            [2 * math.pi - 0.1, 1.5, 2 * math.pi + 0.3, -3.2],
+        ])
+        u = torch.tensor([
+            [0.5, -3.0, 0.3, 2.0],
+            [-0.2, 4.0, -0.4, 1.0],
+        ])
+
+        perm = [0, 2, 1, 3]
+        inv_perm = [0, 2, 1, 3]
+
+        x_grouped = x[:, perm]
+        u_grouped = u[:, perm]
+
+        proj_inter = prod_inter.projx(x)
+        proj_grouped = prod_grouped.projx(x_grouped)
+        self.assertTrue(torch.allclose(proj_inter, proj_grouped[:, inv_perm], atol=1e-6))
+
+        y_inter = prod_inter.expmap(x, u)
+        y_grouped = prod_grouped.expmap(x_grouped, u_grouped)
+        self.assertTrue(torch.allclose(y_inter, y_grouped[:, inv_perm], atol=1e-6))
+
+        u_rec_inter = prod_inter.logmap(x, y_inter)
+        u_rec_grouped = prod_grouped.logmap(x_grouped, y_grouped)
+        self.assertTrue(torch.allclose(u_rec_inter, u_rec_grouped[:, inv_perm], atol=1e-6))
+
+        d_inter = prod_inter.dist(x, y_inter)
+        d_grouped = prod_grouped.dist(x_grouped, y_grouped)
+        self.assertTrue(torch.allclose(d_inter, d_grouped[:, inv_perm], atol=1e-6))
+
+        pu_inter = prod_inter.proju(x, u)
+        pu_grouped = prod_grouped.proju(x_grouped, u_grouped)
+        self.assertTrue(torch.allclose(pu_inter, u, atol=1e-6))
+        self.assertTrue(torch.allclose(pu_inter, pu_grouped[:, inv_perm], atol=1e-6))
+
+
 if __name__ == "__main__":
     unittest.main()
 

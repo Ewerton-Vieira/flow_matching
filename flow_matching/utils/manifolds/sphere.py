@@ -50,19 +50,19 @@ class Sphere(Manifold):
         small = (th < 1e-6).expand_as(log)
         log = torch.where(small, torch.zeros_like(log), log)
 
-        # Handle near-antipodal (θ ~ π): direction is undefined; pick any v ⟂ x
-        anti = (torch.abs(th - torch.tensor(torch.pi, dtype=th.dtype, device=th.device)) < 1e-6).expand_as(log)
-        if anti.any():
-            # choose a coordinate axis least aligned with x, then project & normalize
-            D = x.shape[-1]
-            # pick basis e_k with smallest |x_k|
-            k = torch.argmin(torch.abs(x), dim=-1, keepdim=True)
-            e = torch.zeros_like(x).scatter(-1, k, 1.0)
-            v_alt = self.proju(x, e)
-            v_alt = v_alt / v_alt.norm(dim=-1, keepdim=True).clamp_min(eps)
-            log_alt = v_alt * th
-            log = torch.where(anti, log_alt, log)
+        # Handle near-antipodal (θ ~ π): pick any v ⟂ x, vectorized (no Python if)
+        pi_t = torch.tensor(torch.pi, dtype=th.dtype, device=th.device)
+        anti = (torch.abs(th - pi_t) < 1e-6)               # shape (..., 1)
 
+        # choose a coordinate axis least aligned with x, then project & normalize
+        D = x.shape[-1]
+        k = torch.argmin(torch.abs(x), dim=-1, keepdim=True)        # (..., 1)
+        e = torch.zeros_like(x).scatter(-1, k, 1.0)                  # basis
+        v_alt = self.proju(x, e)
+        v_alt = v_alt / v_alt.norm(dim=-1, keepdim=True).clamp_min(eps)
+        log_alt = v_alt * th                                         # broadcast
+
+        log = torch.where(anti.expand_as(log), log_alt, log)
         return log
 
     def projx(self, x: Tensor) -> Tensor:

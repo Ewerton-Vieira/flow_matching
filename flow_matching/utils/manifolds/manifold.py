@@ -7,7 +7,7 @@
 import abc
 
 import torch.nn as nn
-from torch import Tensor, norm
+from torch import Tensor, norm, abs, pow
 
 
 class Manifold(nn.Module, metaclass=abc.ABCMeta):
@@ -111,4 +111,4 @@ class Euclidean(Manifold):
         return u
     
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
-        return norm(x - y, p=2, dim=-1, keepdim=True)
+        return abs(x - y)
