@@ -9,6 +9,7 @@ from .sphere import Sphere
 from .torus import FlatTorus
 from .product import Product
 from .utils import geodesic
+from .so3 import SO3
 
 __all__ = [
     "Euclidean",
@@ -16,5 +17,6 @@ __all__ = [
     "Sphere",
     "FlatTorus",
     "geodesic",
-    "Product"
+    "Product",
+    "SO3"
 ]
