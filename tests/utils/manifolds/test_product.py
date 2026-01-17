@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from flow_matching.utils.manifolds import Product, FlatTorus, Euclidean
+from flow_matching.utils.manifolds import Product, FlatTorus, Euclidean, SO3
 
 
 class TestProductManifold(unittest.TestCase):
@@ -235,4 +235,33 @@ class TestProductManifoldVectorizedConsistency(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class TestProductManifoldMixedDimensions(unittest.TestCase):
+    def test_so3_plus_euclidean_shapes_and_consistency(self):
+        prod = Product(
+            input_dim=6,
+            manifolds=[
+                (SO3(), 4, 3),
+                (Euclidean(), 2),
+            ],
+        )
+
+        torch.manual_seed(0)
+        x = torch.randn(8, 6)
+        x = prod.projx(x)
+
+        # Tangent dim is 3 (so3) + 2 (euclid) = 5
+        u = torch.randn(8, 5)
+
+        eps = 1e-4
+        y = prod.expmap(x, eps * u)
+        self.assertEqual(tuple(y.shape), (8, 6))
+
+        e = prod.logmap(x, y)
+        self.assertEqual(tuple(e.shape), (8, 5))
+        self.assertTrue(torch.allclose(e, eps * u, atol=1e-6, rtol=5e-3))
+
+        d = prod.dist(x, y)
+        # SO3.dist is scalar (...,1) and Euclidean.dist returns per-coordinate (...,2)
+        self.assertEqual(tuple(d.shape), (8, 3))
 
