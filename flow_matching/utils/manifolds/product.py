@@ -70,16 +70,16 @@ class Product(Manifold):
             tangent_d_list.append(int(td))
 
         self.manifolds = tuple(m_list)
-        self.state_dims = tuple(state_d_list)
+        self.dimensions = tuple(state_d_list)
         self.tangent_dims = tuple(tangent_d_list)
-        self.total_state_dim = int(sum(self.state_dims))
+        self.total_state_dim = int(sum(self.dimensions))
         self.total_tangent_dim = int(sum(self.tangent_dims))
 
         cum_state = [0]
-        for d in self.state_dims:
+        for d in self.dimensions:
             cum_state.append(cum_state[-1] + d)
         self._state_slices = tuple(
-            slice(cum_state[i], cum_state[i + 1]) for i in range(len(self.state_dims))
+            slice(cum_state[i], cum_state[i + 1]) for i in range(len(self.dimensions))
         )
 
         cum_tan = [0]
@@ -187,23 +187,21 @@ class Product(Manifold):
 
     def expmap(self, x: Tensor, u: Tensor) -> Tensor:
         x, u = self._broadcast_batch(x, u)
-        out = torch.empty(
-            *x.shape[:-1], self.total_state_dim, device=x.device, dtype=x.dtype
-        )
+        out = torch.empty_like(x)
 
         if self._euclidean_ref:
             idx_x, idx_u = self._get_indices(x)[0], self._get_indices(x)[1]
             if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
                 x_e = x.index_select(-1, idx_x)
                 u_e = u.index_select(-1, idx_u)
-                out.index_copy_(-1, idx_x, self._euclidean_ref.expmap(x_e, u_e))
+                out[..., idx_x] = self._euclidean_ref.expmap(x_e, u_e)
 
         if self._flat_torus_ref:
             idx_x, idx_u = self._get_indices(x)[2], self._get_indices(x)[3]
             if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
                 x_t = x.index_select(-1, idx_x)
                 u_t = u.index_select(-1, idx_u)
-                out.index_copy_(-1, idx_x, self._flat_torus_ref.expmap(x_t, u_t))
+                out[..., idx_x] = self._flat_torus_ref.expmap(x_t, u_t)
 
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
@@ -215,23 +213,27 @@ class Product(Manifold):
 
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
         x, y = self._broadcast_batch(x, y)
-        out = torch.empty(
-            *x.shape[:-1], self.total_tangent_dim, device=x.device, dtype=x.dtype
-        )
+
+        if self.total_state_dim == self.total_tangent_dim:
+            out = torch.empty_like(x)
+        else:
+            out_shape = list(x.shape)
+            out_shape[-1] = self.total_tangent_dim
+            out = torch.empty(out_shape, device=x.device, dtype=x.dtype)
 
         if self._euclidean_ref:
             idx_x, idx_u = self._get_indices(x)[0], self._get_indices(x)[1]
             if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
                 x_e = x.index_select(-1, idx_x)
                 y_e = y.index_select(-1, idx_x)
-                out.index_copy_(-1, idx_u, self._euclidean_ref.logmap(x_e, y_e))
+                out[..., idx_u] = self._euclidean_ref.logmap(x_e, y_e)
 
         if self._flat_torus_ref:
             idx_x, idx_u = self._get_indices(x)[2], self._get_indices(x)[3]
             if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
                 x_t = x.index_select(-1, idx_x)
                 y_t = y.index_select(-1, idx_x)
-                out.index_copy_(-1, idx_u, self._flat_torus_ref.logmap(x_t, y_t))
+                out[..., idx_u] = self._flat_torus_ref.logmap(x_t, y_t)
 
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
