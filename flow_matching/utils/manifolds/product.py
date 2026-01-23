@@ -10,7 +10,9 @@ import warnings
 
 # Import directly from modules to avoid circular imports with `flow_matching.utils.manifolds.__init__`.
 from flow_matching.utils.manifolds.manifold import Euclidean, Manifold
+from flow_matching.utils.manifolds.so3 import SO3
 from flow_matching.utils.manifolds.torus import FlatTorus
+from flow_matching.utils.manifolds.sphere import Sphere
 
 
 class Product(Manifold):
@@ -50,6 +52,20 @@ class Product(Manifold):
                 norm_specs.append((m, int(d), int(d)))
             elif len(spec) == 3:
                 m, sd, td = spec  # type: ignore[misc]
+
+                # Check that the manifold is consistent with the state and tangent dimensions
+                if isinstance(m, Euclidean) and sd != td:
+                    raise ValueError("Euclidean manifold must have state_dim == tangent_dim")
+                if isinstance(m, FlatTorus) and sd != td:
+                    raise ValueError("FlatTorus manifold must have state_dim == tangent_dim")
+                if isinstance(m, Sphere) and sd != td:
+                    raise ValueError("Sphere manifold must have state_dim == tangent_dim")
+                if isinstance(m, SO3):
+                    if sd != 4:
+                        raise ValueError("SO3 manifold must have state_dim == 4")
+                    if td != 3:
+                        raise ValueError("SO3 manifold must have tangent_dim == 3")
+                
                 norm_specs.append((m, int(sd), int(td)))
             else:
                 raise ValueError(
@@ -128,10 +144,10 @@ class Product(Manifold):
                 "Product manifold has more than 50 manifolds. This may lead to performance issues."
             )
 
-        self._cached_indices = {}  # {(device, torch.long): (e_x, e_u, t_x, t_u)}
+        self._cached_indices = {}  # {device: (e_x, e_u, t_x, t_u)}
 
     def _get_indices(self, like: Tensor):
-        key = (like.device, torch.long)
+        key = like.device
         if key not in self._cached_indices:
             e_x = (
                 torch.as_tensor(
@@ -189,19 +205,19 @@ class Product(Manifold):
         x, u = self._broadcast_batch(x, u)
         out = torch.empty_like(x)
 
+        eu_idx_x, eu_idx_u, t_idx_x, t_idx_u = self._get_indices(x)
+
         if self._euclidean_ref:
-            idx_x, idx_u = self._get_indices(x)[0], self._get_indices(x)[1]
-            if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
-                x_e = x.index_select(-1, idx_x)
-                u_e = u.index_select(-1, idx_u)
-                out[..., idx_x] = self._euclidean_ref.expmap(x_e, u_e)
+            if eu_idx_x is not None and eu_idx_u is not None and eu_idx_x.numel() > 0:
+                x_e = x.index_select(-1, eu_idx_x)
+                u_e = u.index_select(-1, eu_idx_u)
+                out[..., eu_idx_x] = self._euclidean_ref.expmap(x_e, u_e)
 
         if self._flat_torus_ref:
-            idx_x, idx_u = self._get_indices(x)[2], self._get_indices(x)[3]
-            if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
-                x_t = x.index_select(-1, idx_x)
-                u_t = u.index_select(-1, idx_u)
-                out[..., idx_x] = self._flat_torus_ref.expmap(x_t, u_t)
+            if t_idx_x is not None and t_idx_u is not None and t_idx_x.numel() > 0:
+                x_t = x.index_select(-1, t_idx_x)
+                u_t = u.index_select(-1, t_idx_u)
+                out[..., t_idx_x] = self._flat_torus_ref.expmap(x_t, u_t)
 
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
@@ -221,19 +237,19 @@ class Product(Manifold):
             out_shape[-1] = self.total_tangent_dim
             out = torch.empty(out_shape, device=x.device, dtype=x.dtype)
 
+        eu_idx_x, eu_idx_u, t_idx_x, t_idx_u = self._get_indices(x)
+
         if self._euclidean_ref:
-            idx_x, idx_u = self._get_indices(x)[0], self._get_indices(x)[1]
-            if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
-                x_e = x.index_select(-1, idx_x)
-                y_e = y.index_select(-1, idx_x)
-                out[..., idx_u] = self._euclidean_ref.logmap(x_e, y_e)
+            if eu_idx_x is not None and eu_idx_u is not None and eu_idx_x.numel() > 0:
+                x_e = x.index_select(-1, eu_idx_x)
+                y_e = y.index_select(-1, eu_idx_x)
+                out[..., eu_idx_u] = self._euclidean_ref.logmap(x_e, y_e)
 
         if self._flat_torus_ref:
-            idx_x, idx_u = self._get_indices(x)[2], self._get_indices(x)[3]
-            if idx_x is not None and idx_u is not None and idx_x.numel() > 0:
-                x_t = x.index_select(-1, idx_x)
-                y_t = y.index_select(-1, idx_x)
-                out[..., idx_u] = self._flat_torus_ref.logmap(x_t, y_t)
+            if t_idx_x is not None and t_idx_u is not None and t_idx_x.numel() > 0:
+                x_t = x.index_select(-1, t_idx_x)
+                y_t = y.index_select(-1, t_idx_x)
+                out[..., t_idx_u] = self._flat_torus_ref.logmap(x_t, y_t)
 
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
