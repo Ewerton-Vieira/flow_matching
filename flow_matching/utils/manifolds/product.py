@@ -203,80 +203,61 @@ class Product(Manifold):
 
     def expmap(self, x: Tensor, u: Tensor) -> Tensor:
         x, u = self._broadcast_batch(x, u)
-        out = torch.empty_like(x)
 
-        eu_idx_x, eu_idx_u, t_idx_x, t_idx_u = self._get_indices(x)
-
-        if self._euclidean_ref:
-            if eu_idx_x is not None and eu_idx_u is not None and eu_idx_x.numel() > 0:
-                x_e = x.index_select(-1, eu_idx_x)
-                u_e = u.index_select(-1, eu_idx_u)
-                out[..., eu_idx_x] = self._euclidean_ref.expmap(x_e, u_e)
-
-        if self._flat_torus_ref:
-            if t_idx_x is not None and t_idx_u is not None and t_idx_x.numel() > 0:
-                x_t = x.index_select(-1, t_idx_x)
-                u_t = u.index_select(-1, t_idx_u)
-                out[..., t_idx_x] = self._flat_torus_ref.expmap(x_t, u_t)
-
+        # Build output by computing each manifold's expmap and concatenating
+        # This is vmap-compatible (avoids in-place tensor-indexed assignment)
+        parts = []
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
         ):
-            if isinstance(manifold, (Euclidean, FlatTorus)):
-                continue
-            out[..., s_x] = manifold.expmap(x[..., s_x], u[..., s_u])
-        return out
+            x_part = x[..., s_x]
+            u_part = u[..., s_u]
+            exp_part = manifold.expmap(x_part, u_part)
+            parts.append(exp_part)
+
+        return torch.cat(parts, dim=-1)
 
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
         x, y = self._broadcast_batch(x, y)
 
-        if self.total_state_dim == self.total_tangent_dim:
-            out = torch.empty_like(x)
-        else:
-            out_shape = list(x.shape)
-            out_shape[-1] = self.total_tangent_dim
-            out = torch.empty(out_shape, device=x.device, dtype=x.dtype)
-
-        eu_idx_x, eu_idx_u, t_idx_x, t_idx_u = self._get_indices(x)
-
-        if self._euclidean_ref:
-            if eu_idx_x is not None and eu_idx_u is not None and eu_idx_x.numel() > 0:
-                x_e = x.index_select(-1, eu_idx_x)
-                y_e = y.index_select(-1, eu_idx_x)
-                out[..., eu_idx_u] = self._euclidean_ref.logmap(x_e, y_e)
-
-        if self._flat_torus_ref:
-            if t_idx_x is not None and t_idx_u is not None and t_idx_x.numel() > 0:
-                x_t = x.index_select(-1, t_idx_x)
-                y_t = y.index_select(-1, t_idx_x)
-                out[..., t_idx_u] = self._flat_torus_ref.logmap(x_t, y_t)
-
+        # Build output by computing each manifold's logmap and concatenating
+        # This is vmap-compatible (avoids in-place tensor-indexed assignment)
+        parts = []
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
         ):
-            if isinstance(manifold, (Euclidean, FlatTorus)):
-                continue
-            out[..., s_u] = manifold.logmap(x[..., s_x], y[..., s_x])
-        return out
+            x_part = x[..., s_x]
+            y_part = y[..., s_x]
+            log_part = manifold.logmap(x_part, y_part)
+            parts.append(log_part)
+
+        return torch.cat(parts, dim=-1)
 
     def projx(self, x: Tensor) -> Tensor:
-        # Skip identity work: Euclidean projx(x) == x; call others normally
-        out = x.clone()
+        # Build output by computing each manifold's projx and concatenating
+        # This is vmap-compatible (avoids in-place assignment)
+        parts = []
         for manifold, s_x in zip(self.manifolds, self._state_slices):
-            if not isinstance(manifold, Euclidean):
-                out[..., s_x] = manifold.projx(x[..., s_x])
-        return out
+            x_part = x[..., s_x]
+            # Euclidean projx is identity, but we call it anyway for consistency
+            proj_part = manifold.projx(x_part)
+            parts.append(proj_part)
+        return torch.cat(parts, dim=-1)
 
     def proju(self, x: Tensor, u: Tensor) -> Tensor:
         x, u = self._broadcast_batch(x, u)
-        # Skip identity work: Euclidean proju(x,u) == u and FlatTorus proju(x,u) == u
-        out = u.clone()
+        # Build output by computing each manifold's proju and concatenating
+        # This is vmap-compatible (avoids in-place assignment)
+        parts = []
         for manifold, s_x, s_u in zip(
             self.manifolds, self._state_slices, self._tangent_slices
         ):
-            if not isinstance(manifold, (Euclidean, FlatTorus)):
-                out[..., s_u] = manifold.proju(x[..., s_x], u[..., s_u])
-        return out
+            x_part = x[..., s_x]
+            u_part = u[..., s_u]
+            # Euclidean and FlatTorus proju is identity, but we call it anyway
+            proj_part = manifold.proju(x_part, u_part)
+            parts.append(proj_part)
+        return torch.cat(parts, dim=-1)
 
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
         x, y = self._broadcast_batch(x, y)
