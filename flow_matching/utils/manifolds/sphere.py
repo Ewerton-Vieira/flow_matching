@@ -12,7 +12,59 @@ from flow_matching.utils.manifolds import Manifold
 
 
 class Sphere(Manifold):
-    r"""Unit hypersphere S^{D-1} ⊂ ℝ^D."""
+    r"""
+    Unit hypersphere :math:`\mathbb{S}^{D-1} \subset \mathbb{R}^{D}` with the
+    standard (round) Riemannian metric, using an *embedded/ambient* tangent
+    representation.
+
+    Representation
+    -------------
+    - Points are ambient vectors :math:`x \in \mathbb{R}^{D}` constrained to unit
+      norm: :math:`\|x\| = 1`.
+    - Tangent vectors at :math:`x` are also represented in the ambient space
+      :math:`\mathbb{R}^{D}` as vectors orthogonal to :math:`x`:
+
+      .. math::
+          T_x \mathbb{S}^{D-1} = \{u \in \mathbb{R}^{D} : \langle x, u \rangle = 0\}.
+
+      The projection `proju(x, u)` implements the orthogonal projection onto
+      this subspace.
+
+    Maps
+    ----
+    - Exponential map (geodesic) for :math:`u \in T_x \mathbb{S}^{D-1}`:
+
+      .. math::
+          \operatorname{Exp}_x(u) = x \cos(\|u\|) + \frac{u}{\|u\|}\sin(\|u\|),
+
+      with a small-step fallback to the normalized retraction
+      :math:`\mathrm{projx}(x+u)` for numerical stability.
+
+    - Logarithm map returning :math:`u \in T_x \mathbb{S}^{D-1}` such that
+      :math:`\operatorname{Exp}_x(u)=y` (for non-antipodal pairs), computed via
+      the great-circle angle :math:`\theta = \arccos(\langle x,y\rangle)` and the
+      tangent direction obtained by removing the component of :math:`y` along
+      :math:`x`.
+
+      Near :math:`\theta \approx 0` the log map returns the zero vector.
+      Near antipodal pairs (:math:`\theta \approx \pi`) the log map is not unique;
+      this implementation deterministically selects an arbitrary unit tangent
+      direction orthogonal to :math:`x`.
+
+    Distance
+    --------
+    Geodesic distance (great-circle distance):
+
+    .. math::
+        d(x,y) = \arccos(\langle x, y \rangle) \in [0,\pi],
+
+    with inner products clamped for numerical stability.
+
+    Notes
+    -----
+    - `projx` normalizes inputs to the unit sphere.
+    - All operations are vectorized over batch dimensions.
+    """
 
     # Epsilon values for different data types to handle numerical stability
     EPS = defaultdict(lambda: 1e-6, {torch.float32: 1e-6, torch.float64: 1e-12})
