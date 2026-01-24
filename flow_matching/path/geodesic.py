@@ -4,6 +4,7 @@
 # This source code is licensed under the CC-by-NC license found in the
 # LICENSE file in the root directory of this source tree.
 
+import warnings
 import torch
 
 from torch import Tensor
@@ -15,7 +16,7 @@ from flow_matching.path.path_sample import PathSample
 from flow_matching.path.scheduler import ConvexScheduler
 from flow_matching.utils import expand_tensor_like
 
-from flow_matching.utils.manifolds import geodesic, Manifold
+from flow_matching.utils.manifolds import geodesic, Manifold, Product, SO3
 
 
 class GeodesicProbPath(ProbPath):
@@ -67,8 +68,13 @@ class GeodesicProbPath(ProbPath):
         self.scheduler = scheduler
         self.manifold = manifold
 
-    def sample(self, x_0: Tensor, x_1: Tensor, t: Tensor) -> PathSample:
-        r"""Sample from the Riemannian probability path with geodesic interpolation:
+        self.has_so3 = False
+
+        if (isinstance(self.manifold, Product) and len([m for m in self.manifold.manifolds if isinstance(m, SO3)]) > 1) or isinstance(self.manifold, SO3):
+            self.has_so3 = True
+
+    def _ambient_space_sample(self, x_0: Tensor, x_1: Tensor, t: Tensor) -> PathSample:
+        r"""Sample from the Riemannian probability path with geodesic interpolation in ambient space:
 
         | given :math:`(X_0,X_1) \sim \pi(X_0,X_1)` and a scheduler :math:`\kappa_t`.
         | return :math:`X_0, X_1, X_t = \exp_{X_1}(\kappa_t \log_{X_1}(X_0))`, and the conditional velocity at :math:`X_t, \dot{X}_t`.
@@ -103,3 +109,46 @@ class GeodesicProbPath(ProbPath):
         dx_t = dx_t.reshape_as(x_1)
 
         return PathSample(x_t=x_t, dx_t=dx_t, x_1=x_1, x_0=x_0, t=t_original)
+
+    def _tangent_space_sample(self, x_0: Tensor, x_1: Tensor, t: Tensor) -> PathSample:
+        self.assert_sample_shape(x_0=x_0, x_1=x_1, t=t)
+
+        t_original = t  # PathSample expects original shape
+
+        # v := Log_{x0}(x1) in tangent coordinates expected by expmap.
+        # For SO3: v is (..., 3)
+        v = self.manifold.logmap(x_0, x_1)
+
+        alpha_t = self.scheduler(t).alpha_t  # shape (B,) or broadcastable to (B,)
+
+        # d alpha(t) / dt via forward-mode JVP
+        _, d_alpha_t = jvp(
+            lambda s: self.scheduler(s).alpha_t,
+            (t,),
+            (torch.ones_like(t),),
+        )  # shape (B,)
+
+        # x_t = Exp_{x0}( alpha(t) * v )
+        # For SO3: Exp_q(omega) = q ⊗ exp(omega)
+        x_t = self.manifold.expmap(x_0, alpha_t.unsqueeze(-1) * v)
+
+        # u_t in Lie algebra coords (what the expmap-based solver should integrate)
+        u_t = d_alpha_t.unsqueeze(-1) * v  # (B,3) for SO3
+
+        # Match the old PathSample convention: flatten dx_t to (B, -1)
+        dx_t = u_t.reshape(x_1.shape[0], -1)
+
+        return PathSample(x_t=x_t, dx_t=dx_t, x_1=x_1, x_0=x_0, t=t_original)
+
+
+    def sample(self, x_0: Tensor, x_1: Tensor, t: Tensor, space: str = "tangent_space") -> PathSample:
+        if self.has_so3 and space == "ambient_space":
+            warnings.warn("SO3 manifold detected. Using tangent space sampling by default.")
+            space = "tangent_space"
+
+        if space == "ambient_space":
+            return self._ambient_space_sample(x_0, x_1, t)
+        elif space == "tangent_space":
+            return self._tangent_space_sample(x_0, x_1, t)
+        else:
+            raise ValueError(f"Invalid space: {space}. Must be one of 'tangent_space' or 'ambient_space'.")

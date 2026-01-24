@@ -74,6 +74,7 @@ class RiemannianODESolver(Solver):
             "euler": _euler_step,
             "midpoint": _midpoint_step,
             "rk4": _rk4_step,
+            "euler_riemannian": _euler_riemannian_step,
         }
         assert method in step_fns.keys(), f"Unknown method {method}"
         step_fn = step_fns[method]
@@ -186,6 +187,39 @@ def _euler_step(
 
     return projx_fn(xt)
 
+
+def _euler_riemannian_step(
+    velocity_model: Callable,
+    xt: Tensor,
+    t0: Tensor,
+    dt: Tensor,
+    manifold: Manifold,
+    projx: bool = True,
+    proju: bool = True,
+) -> Tensor:
+    r"""Perform an Euler step on a manifold with Riemannian geometry.
+
+    Args:
+        velocity_model (Callable): the velocity model
+        xt (Tensor): tensor containing the state at time t0
+        t0 (Tensor): the time at which this step is taken
+        dt (Tensor): the step size
+        manifold (Manifold): a manifold object
+        projx (bool, optional): whether to project the state onto the manifold. Defaults to True.
+        proju (bool, optional): whether to project the velocity onto the tangent plane. Defaults to True.
+
+    Returns:
+        Tensor: tensor containing the state after the step
+    """
+    velocity_fn = lambda x, t: (
+        manifold.proju(x, velocity_model(x, t)) if proju else velocity_model(x, t)
+    )
+
+    vt = velocity_fn(xt, t0)
+
+    xt = manifold.expmap(xt, vt * dt)
+
+    return xt
 
 def _midpoint_step(
     velocity_model: Callable,
