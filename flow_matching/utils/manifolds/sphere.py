@@ -35,10 +35,7 @@ class Sphere(Manifold):
     - Exponential map (geodesic) for :math:`u \in T_x \mathbb{S}^{D-1}`:
 
       .. math::
-          \operatorname{Exp}_x(u) = x \cos(\|u\|) + \frac{u}{\|u\|}\sin(\|u\|),
-
-      with a small-step fallback to the normalized retraction
-      :math:`\mathrm{projx}(x+u)` for numerical stability.
+          \operatorname{Exp}_x(u) = x \cos(\|u\|) + \frac{u}{\|u\|}\sin(\|u\|).
 
     - Logarithm map returning :math:`u \in T_x \mathbb{S}^{D-1}` such that
       :math:`\operatorname{Exp}_x(u)=y` (for non-antipodal pairs), computed via
@@ -71,17 +68,15 @@ class Sphere(Manifold):
 
     def expmap(self, x: Tensor, u: Tensor) -> Tensor:
         # x on sphere, u in T_x S^(D-1)
+        # Formula: exp_x(u) = x * cos(||u||) + (u / ||u||) * sin(||u||)
+        # For small ||u||: sin(||u||) → 0, so (u / ||u||) * sin(||u||) → 0
+        # regardless of the clamped division, giving exp_x(u) → x (correct)
         eps = self.EPS[u.dtype]
         u_norm = u.norm(dim=-1, keepdim=True)
-        # Safe unit direction in tangent
         u_hat = u / u_norm.clamp_min(eps)
         cos_t = torch.cos(u_norm)
         sin_t = torch.sin(u_norm)
-        exp = x * cos_t + u_hat * sin_t
-        # Retraction fallback for tiny steps
-        retr = self.projx(x + u)
-        cond = (u_norm > (10.0 * eps))  # slightly larger threshold
-        return torch.where(cond, exp, retr)
+        return x * cos_t + u_hat * sin_t
 
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
         # Returns v in T_x S^(D-1) such that Exp_x(v) = y
@@ -90,31 +85,33 @@ class Sphere(Manifold):
         x = self.projx(x)
         y = self.projx(y)
 
-        cos_th = (x * y).sum(dim=-1, keepdim=True).clamp(-1.0 + eps, 1.0 - eps)
-        th = torch.acos(cos_th)                            # θ ∈ (0, π)
-        # Tangent direction toward y
-        u = y - cos_th * x                                 # = y - ⟨x,y⟩ x
-        sin_th = u.norm(dim=-1, keepdim=True).clamp_min(eps)
-        v = u / sin_th                                     # unit tangent
-        log = v * th                                       # θ * v
+        cos_th = (x * y).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
 
-        # Handle near-identical (θ ~ 0): return zero vector in T_x
-        small = (th < 1e-6).expand_as(log)
-        log = torch.where(small, torch.zeros_like(log), log)
+        # Handle near-antipodal (cos_th ~ -1) first, before standard computation
+        # which becomes unstable when y ≈ -x
+        anti = cos_th < -1.0 + 1e-6  # shape (..., 1)
 
-        # Handle near-antipodal (θ ~ π): pick any v ⟂ x, vectorized (no Python if)
-        pi_t = torch.tensor(torch.pi, dtype=th.dtype, device=th.device)
-        anti = (torch.abs(th - pi_t) < 1e-6)               # shape (..., 1)
-
-        # choose a coordinate axis least aligned with x, then project & normalize
-        D = x.shape[-1]
-        k = torch.argmin(torch.abs(x), dim=-1, keepdim=True)        # (..., 1)
-        e = torch.zeros_like(x).scatter(-1, k, 1.0)                  # basis
+        # For antipodal case: pick arbitrary v ⟂ x, scale by π
+        k = torch.argmin(torch.abs(x), dim=-1, keepdim=True)  # (..., 1)
+        e = torch.zeros_like(x).scatter(-1, k, 1.0)  # basis vector
         v_alt = self.proju(x, e)
         v_alt = v_alt / v_alt.norm(dim=-1, keepdim=True).clamp_min(eps)
-        log_alt = v_alt * th                                         # broadcast
+        log_anti = v_alt * torch.pi
 
-        log = torch.where(anti.expand_as(log), log_alt, log)
+        # Standard case
+        th = torch.acos(cos_th)  # θ ∈ [0, π]
+        # Tangent direction toward y
+        u = y - cos_th * x  # = y - ⟨x,y⟩ x
+        sin_th = u.norm(dim=-1, keepdim=True).clamp_min(eps)
+        v = u / sin_th  # unit tangent
+        log_std = v * th  # θ * v
+
+        # Handle near-identical (θ ~ 0): return zero vector in T_x
+        small = (th < 1e-6).expand_as(log_std)
+        log_std = torch.where(small, torch.zeros_like(log_std), log_std)
+
+        # Combine: use antipodal result where cos_th ≈ -1
+        log = torch.where(anti.expand_as(log_std), log_anti, log_std)
         return log
 
     def projx(self, x: Tensor) -> Tensor:
@@ -125,8 +122,11 @@ class Sphere(Manifold):
         return u - (x * u).sum(dim=-1, keepdim=True) * x
 
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
-        eps = self.EPS[x.dtype]
-        inner = (x * y).sum(dim=-1, keepdim=True)
-        inner = inner.clamp(min=-1.0 + eps, max=1.0 - eps)
-        d = torch.acos(inner)
+        # Use the stable formula: d = 2 * arcsin(||y - x|| / 2)
+        # This is equivalent to acos(<x,y>) for unit vectors but more stable
+        # near d=0 (identical points) and d=π (antipodal points)
+        diff = y - x
+        half_chord = diff.norm(dim=-1, keepdim=True) / 2.0
+        half_chord = half_chord.clamp(max=1.0)  # numerical stability
+        d = 2.0 * torch.asin(half_chord)
         return d
