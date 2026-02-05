@@ -128,15 +128,21 @@ class GeodesicProbPath(ProbPath):
             (torch.ones_like(t),),
         )  # shape (B,)
 
+        # Expand scalar-per-sample alpha_t / d_alpha_t to broadcast with v,
+        # which may be 2-D [B, dim] or higher-rank [B, seq, dim].
+        alpha_t_exp = expand_tensor_like(input_tensor=alpha_t, expand_to=v[..., 0:1])
+        d_alpha_t_exp = expand_tensor_like(input_tensor=d_alpha_t, expand_to=v[..., 0:1])
+
         # x_t = Exp_{x0}( alpha(t) * v )
-        # For SO3: Exp_q(omega) = q ⊗ exp(omega)
-        x_t = self.manifold.expmap(x_0, alpha_t.unsqueeze(-1) * v)
+        x_t = self.manifold.expmap(x_0, alpha_t_exp * v)
 
         # u_t in Lie algebra coords (what the expmap-based solver should integrate)
-        u_t = d_alpha_t.unsqueeze(-1) * v  # (B,3) for SO3
+        u_t = d_alpha_t_exp * v
 
-        # Match the old PathSample convention: flatten dx_t to (B, -1)
-        dx_t = u_t.reshape(x_1.shape[0], -1)
+        # Preserve all leading dims (batch, seq, ...) and only flatten the
+        # last axis so that tangent_dim != ambient_dim (e.g. SO3) is handled
+        # while higher-rank inputs (e.g. [batch, seq, dim]) keep their shape.
+        dx_t = u_t.reshape(*x_1.shape[:-1], -1)
 
         return PathSample(x_t=x_t, dx_t=dx_t, x_1=x_1, x_0=x_0, t=t_original)
 
