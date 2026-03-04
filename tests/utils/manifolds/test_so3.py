@@ -21,7 +21,7 @@ def _canon_equiv(
     so3: SO3, q1: torch.Tensor, q2: torch.Tensor, atol=1e-8, rtol=1e-6
 ) -> bool:
     # Compare rotations up to antipodal sign by canonicalizing both.
-    return torch.allclose(so3.projx(q1), so3.projx(q2), atol=atol, rtol=rtol)
+    return torch.allclose(so3.projx_canon(q1), so3.projx_canon(q2), atol=atol, rtol=rtol)
 
 
 class TestSO3(unittest.TestCase):
@@ -40,15 +40,16 @@ class TestSO3(unittest.TestCase):
             )
         )
 
-        # antipodal invariance: projx(q) == projx(-q)
-        p2 = self.so3.projx(-q)
-        self.assertTrue(torch.allclose(p, p2, atol=1e-10))
+        # antipodal invariance is provided by projx_canon (not projx)
+        p2 = self.so3.projx_canon(q)
+        p3 = self.so3.projx_canon(-q)
+        self.assertTrue(torch.allclose(p2, p3, atol=1e-10))
 
     def test_product_hamilton_associativity(self):
         torch.manual_seed(1)
-        a = self.so3.projx(_rand_unit_quaternion(32))
-        b = self.so3.projx(_rand_unit_quaternion(32))
-        c = self.so3.projx(_rand_unit_quaternion(32))
+        a = self.so3.projx_canon(_rand_unit_quaternion(32))
+        b = self.so3.projx_canon(_rand_unit_quaternion(32))
+        c = self.so3.projx_canon(_rand_unit_quaternion(32))
 
         left = SO3.product(SO3.product(a, b), c)
         right = SO3.product(a, SO3.product(b, c))
@@ -399,6 +400,37 @@ class TestSO3(unittest.TestCase):
                 torch.allclose(log_norm, dist_xy, atol=1e-9, rtol=1e-7),
                 f"||logmap(x,y)|| should equal dist(x,y)",
             )
+
+    def test_pi_tiebreak_consistency(self):
+        """
+        Verify that logmap returns consistent results for π rotations,
+        regardless of the sign of the input quaternion (q vs -q).
+        """
+        torch.manual_seed(200)
+        B = 1000
+
+        # Generate random unit axes
+        a = torch.randn(B, 3, dtype=torch.float64)
+        a = a / a.norm(dim=-1, keepdim=True)
+
+        # Construct exact π rotation: Delta = [0, a]
+        Delta = torch.cat([torch.zeros(B, 1, dtype=torch.float64), a], dim=-1)
+        Delta_neg = -Delta
+
+        # Use identity as x, and y = Delta or -Delta (same SO(3) rotation)
+        x = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float64).repeat(B, 1)
+        y1 = Delta
+        y2 = Delta_neg
+
+        w1 = self.so3.logmap(x, y1)
+        w2 = self.so3.logmap(x, y2)
+
+        # Should be equal (or very close) after tie-break
+        diff = (w1 - w2).norm(dim=-1)
+        self.assertTrue(
+            diff.max().item() < 1e-10,
+            f"logmap should be consistent for q and -q near π, max diff: {diff.max().item()}"
+        )
 
 
 if __name__ == "__main__":

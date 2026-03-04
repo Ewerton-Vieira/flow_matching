@@ -29,9 +29,11 @@ class SO3(Manifold):
 
     Conventions
     -----------
-    - Canonical representative: `projx` normalizes and applies a deterministic
-      sign convention so that `projx(q) == projx(-q)`. Primarily enforces `w >= 0`,
-      with a stable tie-break when `w ≈ 0`.
+    - Canonical representative: SO(3) has the identification `q ~ -q`, so there is
+      no globally smooth choice of representative. This file therefore separates:
+        - `projx`: smooth projection to the unit sphere (normalization only).
+        - `canon`: deterministic (but discontinuous) representative selection.
+        - `projx_canon`: convenience = normalize then canonicalize.
     - Relative rotation: :math:`\Delta = q_x^* \otimes q_y` (Hamilton product,
       scalar-first), flipped to the shortest arc by enforcing :math:`\Delta_w \ge 0`.
     - Returned angles are in :math:`[0,\pi]`.
@@ -104,6 +106,48 @@ class SO3(Manifold):
         """Quaternion conjugate [w, x, y, z] -> [w, -x, -y, -z]."""
         return torch.stack((q[..., 0], -q[..., 1], -q[..., 2], -q[..., 3]), dim=-1)
 
+    def _relative_quat_shortest_with_pi_tiebreak(self, x: Tensor, y: Tensor) -> Tensor:
+        """
+        Compute Delta = x* ⊗ y, enforce shortest arc (Delta.w >= 0),
+        and additionally make Delta deterministic when Delta.w ≈ 0 (near π).
+
+        The π tie-break picks the sign so that the largest-magnitude component of v is >= 0.
+        """
+        eps = self.EPS[x.dtype]
+
+        # Normalize only (do not canon here)
+        x = self.normalize(x)
+        y = self.normalize(y)
+
+        Delta = self.product(self._qconj(x), y)  # (...,4)
+
+        # Shortest arc: flip to make w >= 0
+        Delta = torch.where(Delta[..., :1] < 0, -Delta, Delta)
+
+        w = Delta[..., :1]      # (...,1)
+        v = Delta[..., 1:]      # (...,3)
+
+        # ----- π tie-break region -----
+        w_thresh = 1e-4 if x.dtype in (torch.float32, torch.float64) else 1e-3
+
+        near_pi = (w.abs() < w_thresh)
+
+        # If v is extremely tiny, don't flip
+        v_norm = v.norm(dim=-1, keepdim=True)
+        safe = (v_norm > eps)
+
+        # Pick the index of the largest-magnitude component of v
+        idx = v.abs().argmax(dim=-1, keepdim=True)        # (...,1) in {0,1,2}
+        max_comp = v.gather(-1, idx)                      # (...,1)
+
+        # Flip so that that component is >= 0
+        flip = torch.where(max_comp < 0, -1.0, 1.0).to(Delta.dtype)  # (...,1)
+
+        # Apply only in the near-pi region (and only if v is nonzero)
+        Delta = torch.where(near_pi & safe, Delta * flip, Delta)
+
+        return Delta
+
     @staticmethod
     def from_euler(angles: Tensor, order: str = "zyx", degrees: bool = False) -> Tensor:
         """
@@ -170,6 +214,17 @@ class SO3(Manifold):
         flip = torch.where(use_qw, flip_qw, flip_v)             # (...,1)
         return q * flip 
 
+    @staticmethod
+    def normalize(q: Tensor) -> Tensor:
+        """Normalize quaternion(s) to unit norm (no canonicalization)."""
+        eps = SO3.EPS[q.dtype]
+        inv_norm = torch.rsqrt((q * q).sum(dim=-1, keepdim=True).clamp_min(eps * eps))
+        return q * inv_norm
+
+    def projx_canon(self, x: Tensor) -> Tensor:
+        """Normalize then apply canonical sign convention (discontinuous)."""
+        return self.canon(self.normalize(x))
+
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
         """
         Lie-algebra (so(3)) log map with small-angle series for stability.
@@ -177,17 +232,11 @@ class SO3(Manifold):
         """
         eps = self.EPS[x.dtype]
 
-        # Normalize + canonicalize inputs
-        x = self.projx(x)
-        y = self.projx(y)
+        Delta = self._relative_quat_shortest_with_pi_tiebreak(x, y)
 
-        # Relative quaternion Δ = x* ⊗ y, flip to shortest arc (Δ.w ≥ 0)
-        Delta = self.product(self._qconj(x), y)
-        Delta = torch.where(Delta[..., :1] < 0, -Delta, Delta)
-
-        w = Delta[..., 0:1]           # scalar part
-        v = Delta[..., 1:]            # vector part (...,3)
-        s = v.norm(dim=-1, keepdim=True)  # ||v|| = sin(φ/2)
+        w = Delta[..., 0:1]
+        v = Delta[..., 1:]
+        s = v.norm(dim=-1, keepdim=True)
 
         # ---- Small-angle series branch (about s = 0) ----
         # φ/s = 2 + (1/3)s^2 + (3/20)s^4 + (5/56)s^6 + ...
@@ -197,20 +246,14 @@ class SO3(Manifold):
                         + (3.0/20.0) * s2 * s2
                         + (5.0/56.0) * s2 * s2 * s2)
 
-        # ---- General branch (stable everywhere) ----
-        # φ = 2 * atan2(s, w); ω = (φ/s) v, with safe s→0 handling
+        # ---- General branch ----
         phi = 2.0 * torch.atan2(s, w)
         scale_general = torch.where(s > eps, phi / s, torch.zeros_like(s))
 
-        # Threshold for switching to series (tuned per dtype)
-        # s ≈ sin(φ/2); s < 1e-4 is very small rotation for fp32/bfloat16.
         s_thresh = min(eps * 1e3, 1e-4)
-
         scale = torch.where(s < s_thresh, scale_series, scale_general)
 
-        # ω = scale * v (note: if s=0 then v=0 → ω=0)
-        omega = scale * v
-        return omega
+        return scale * v
 
     def expmap(self, x: Tensor, omega: Tensor) -> Tensor:
         """
@@ -219,7 +262,8 @@ class SO3(Manifold):
         Output: y (...,4) quaternion (canonicalized).
         """
         eps = self.EPS[x.dtype]
-        x = self.projx(x)
+        # Normalize base point (avoid canonicalization-induced discontinuities)
+        x = self.normalize(x)
         phi = omega.norm(dim=-1, keepdim=True)   # angle
         half = 0.5 * phi
 
@@ -232,14 +276,12 @@ class SO3(Manifold):
         delta = torch.cat([c, s * a], dim=-1)    # (...,4)
 
         y = self.product(x, delta)
-        return self.projx(y)
+        # Normalize output (do not canonicalize here; representation is defined up to sign)
+        return self.normalize(y)
 
     def projx(self, x: Tensor) -> Tensor:
-        """Unit + canonical sign (qw ≥ 0) with rsqrt normalization."""
-        eps = self.EPS[x.dtype]
-        inv_norm = torch.rsqrt((x * x).sum(dim=-1, keepdim=True).clamp_min(eps * eps))
-        q = x * inv_norm
-        return self.canon(q)
+        """Smooth projection to the unit quaternion sphere (normalization only)."""
+        return self.normalize(x)
 
     def proju(self, x: Tensor, u: Tensor) -> Tensor:
         """
@@ -250,17 +292,11 @@ class SO3(Manifold):
 
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
         """Stable geodesic distance on SO(3) using relative quaternion and atan2."""
-        eps = self.EPS[x.dtype]
-        x = self.projx(x)
-        y = self.projx(y)
-
-        Delta = self.product(self._qconj(x), y)                  # Δ = x* ⊗ y
-        Delta = torch.where(Delta[..., :1] < 0, -Delta, Delta) # enforce shortest: Δ.w ≥ 0
+        Delta = self._relative_quat_shortest_with_pi_tiebreak(x, y)
 
         w = Delta[..., 0:1].clamp(-1.0, 1.0)
         v = Delta[..., 1:]
         s = v.norm(dim=-1, keepdim=True)
 
         # φ = 2 * atan2(‖v‖, w) ∈ [0, π]
-        phi = 2.0 * torch.atan2(s, w.clamp_min(eps))
-        return phi
+        return 2.0 * torch.atan2(s, w)
