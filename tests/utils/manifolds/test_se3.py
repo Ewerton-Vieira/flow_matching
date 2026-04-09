@@ -290,6 +290,219 @@ class TestSE3(unittest.TestCase):
         self.assertTrue(torch.allclose(omega_norm, d[..., 3:], atol=1e-9))
 
 
+class TestSE3SophusVectors(unittest.TestCase):
+    """Tests using the exact test vectors from Sophus test_ceres_se3.cpp.
+
+    Reproduces the se3_vec and point_vec fixtures from Sophus, then runs the
+    same manifold invariants that Sophus::LieGroupCeresTests::testManifold
+    checks on every pair (i, j).
+
+    Reference: https://github.com/strasdat/Sophus/blob/main/test/ceres/test_ceres_se3.cpp
+    """
+
+    def setUp(self):
+        self.se3 = SE3()
+        self.so3 = SO3()
+        self.kPi = math.pi
+
+        # Build SE3 elements matching Sophus test_ceres_se3.cpp
+        self.se3_vec = self._build_sophus_se3_vec()
+        self.point_vec = self._build_sophus_point_vec()
+
+    def _make_se3(self, omega, t):
+        """Construct SE3 element from rotation vector omega and translation t.
+        Equivalent to SE3d(SO3d::exp(omega), t) in Sophus."""
+        omega_t = torch.tensor([omega], dtype=torch.float64)
+        t_t = torch.tensor([t], dtype=torch.float64)
+        identity_q = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float64)
+        q = self.so3.expmap(identity_q, omega_t)
+        return torch.cat([t_t, q], dim=-1)  # [tx, ty, tz, qw, qx, qy, qz]
+
+    def _se3_compose(self, a, b):
+        """SE3 group composition: (R_a, t_a) * (R_b, t_b) = (R_a R_b, t_a + R_a t_b)."""
+        t_a, q_a = a[..., :3], a[..., 3:]
+        t_b, q_b = b[..., :3], b[..., 3:]
+        q_ab = SO3.product(q_a, q_b)
+        t_ab = t_a + SO3.quat_action(q_a, t_b)
+        return torch.cat([t_ab, SO3.normalize(q_ab)], dim=-1)
+
+    def _se3_inverse(self, x):
+        """SE3 inverse: (R, t)⁻¹ = (Rᵀ, -Rᵀt)."""
+        t, q = x[..., :3], x[..., 3:]
+        q_inv = SO3._qconj(q)
+        t_inv = SO3.quat_action(q_inv, -t)
+        return torch.cat([t_inv, SO3.normalize(q_inv)], dim=-1)
+
+    def _build_sophus_se3_vec(self):
+        """Build the exact se3_vec from test_ceres_se3.cpp."""
+        vec = []
+        # 0: SE3(SO3::exp([0.2, 0.5, 0.0]), [0, 0, 0])
+        vec.append(self._make_se3([0.2, 0.5, 0.0], [0, 0, 0]))
+        # 1: SE3(SO3::exp([0.2, 0.5, -1.0]), [10, 0, 0])
+        vec.append(self._make_se3([0.2, 0.5, -1.0], [10, 0, 0]))
+        # 2: SE3(SO3::exp([0, 0, 0]), [0, 100, 5])
+        vec.append(self._make_se3([0.0, 0.0, 0.0], [0, 100, 5]))
+        # 3: SE3(SO3::exp([0, 0, 0.00001]), [0, 0, 0]) — near identity
+        vec.append(self._make_se3([0.0, 0.0, 0.00001], [0, 0, 0]))
+        # 4: SE3(SO3::exp([0, 0, 0.00001]), [0, -1e-8, 1e-10]) — near identity, tiny translation
+        vec.append(self._make_se3([0.0, 0.0, 0.00001], [0, -0.00000001, 0.0000000001]))
+        # 5: SE3(SO3::exp([0, 0, 0.00001]), [0.01, 0, 0])
+        vec.append(self._make_se3([0.0, 0.0, 0.00001], [0.01, 0, 0]))
+        # 6: SE3(SO3::exp([π, 0, 0]), [4, -5, 0]) — π rotation
+        vec.append(self._make_se3([self.kPi, 0, 0], [4, -5, 0]))
+        # 7: Conjugation near π:
+        #    SE3(exp([0.2,0.5,0]),0) * SE3(exp([π,0,0]),0) * SE3(exp([-0.2,-0.5,0]),0)
+        a = self._make_se3([0.2, 0.5, 0.0], [0, 0, 0])
+        b = self._make_se3([self.kPi, 0, 0], [0, 0, 0])
+        c = self._make_se3([-0.2, -0.5, -0.0], [0, 0, 0])
+        vec.append(self._se3_compose(self._se3_compose(a, b), c))
+        # 8: Full conjugation near π:
+        #    SE3(exp([0.3,0.5,0.1]),[2,0,-7]) * SE3(exp([π,0,0]),0) * SE3(exp([-0.3,-0.5,-0.1]),[0,6,0])
+        a2 = self._make_se3([0.3, 0.5, 0.1], [2, 0, -7])
+        b2 = self._make_se3([self.kPi, 0, 0], [0, 0, 0])
+        c2 = self._make_se3([-0.3, -0.5, -0.1], [0, 6, 0])
+        vec.append(self._se3_compose(self._se3_compose(a2, b2), c2))
+        return vec
+
+    def _build_sophus_point_vec(self):
+        """Build the exact point_vec from test_ceres_se3.cpp."""
+        points = [
+            [1.012, 2.73, -1.4],
+            [9.2, -7.3, -4.4],
+            [2.5, 0.1, 9.1],
+            [12.3, 1.9, 3.8],
+            [-3.21, 3.42, 2.3],
+            [-8.0, 6.1, -1.1],
+            [0.0, 2.5, 5.9],
+            [7.1, 7.8, -14],
+            [5.8, 9.2, 0.0],
+        ]
+        return [torch.tensor([p], dtype=torch.float64) for p in points]
+
+    def _rotational_norm(self, tangent):
+        """RotationalPart<SE3d>::Norm — norm of the rotational (last 3) components."""
+        return tangent[..., 3:].norm(dim=-1)
+
+    def test_x_plus_zero_is_x(self):
+        """Sophus xPlusZeroIsXAt: expmap(x, 0) == x for all test vectors."""
+        for i, x in enumerate(self.se3_vec):
+            zero = torch.zeros(1, 6, dtype=torch.float64)
+            y = self.se3.expmap(x, zero)
+            error = self.se3.logmap(x, y).square().sum()
+            self.assertTrue(
+                error < 1e-15,
+                f"xPlusZeroIsX failed for se3_vec[{i}], error={error.item():.2e}",
+            )
+
+    def test_x_minus_x_is_zero(self):
+        """Sophus xMinusXIsZeroAt: logmap(x, x) == 0 for all test vectors."""
+        for i, x in enumerate(self.se3_vec):
+            tangent = self.se3.logmap(x, x)
+            error = tangent.square().sum()
+            self.assertTrue(
+                error < 1e-15,
+                f"xMinusXIsZero failed for se3_vec[{i}], error={error.item():.2e}",
+            )
+
+    def test_minus_plus_is_identity(self):
+        """Sophus minusPlusIsIdentityAt: logmap(x, expmap(x, delta)) == delta.
+
+        Tested for all pairs (i, j) where delta = log(x_i⁻¹ * x_j).
+        Skips when rotational norm of delta > π(1-ε), matching Sophus behavior."""
+        eps = 1e-9
+        for i, x in enumerate(self.se3_vec):
+            for j, y in enumerate(self.se3_vec):
+                delta = self.se3.logmap(x, y)
+                rot_norm = self._rotational_norm(delta)
+                if rot_norm > self.kPi * (1.0 - eps):
+                    continue  # Skip near-π, same as Sophus
+                y_rec = self.se3.expmap(x, delta)
+                delta_rec = self.se3.logmap(x, y_rec)
+                diff = delta_rec - delta
+                error = diff.square().sum()
+                self.assertTrue(
+                    error < 1e-12,
+                    f"minusPlusIsIdentity failed for pair ({i},{j}), error={error.item():.2e}",
+                )
+
+    def test_minus_plus_is_identity_at_zero(self):
+        """Sophus minusPlusIsIdentityAt with delta=0: logmap(x, expmap(x, 0)) == 0."""
+        for i, x in enumerate(self.se3_vec):
+            zero = torch.zeros(1, 6, dtype=torch.float64)
+            y = self.se3.expmap(x, zero)
+            delta_rec = self.se3.logmap(x, y)
+            error = delta_rec.square().sum()
+            self.assertTrue(
+                error < 1e-15,
+                f"minusPlusIsIdentity(zero) failed for se3_vec[{i}], error={error.item():.2e}",
+            )
+
+    def test_plus_minus_is_identity(self):
+        """Sophus plusMinusIsIdentityAt: expmap(x, logmap(x, y)) == y.
+
+        Tested for all pairs (i, j), including (i, i)."""
+        for i, x in enumerate(self.se3_vec):
+            for j, y in enumerate(self.se3_vec):
+                delta = self.se3.logmap(x, y)
+                y_rec = self.se3.expmap(x, delta)
+                error = self.se3.logmap(y, y_rec).square().sum()
+                self.assertTrue(
+                    error < 1e-12,
+                    f"plusMinusIsIdentity failed for pair ({i},{j}), error={error.item():.2e}",
+                )
+
+    def test_group_action_on_points(self):
+        """SE3 action on points: T * p = R * p + t.
+
+        Tests all (se3_vec[i], point_vec[j]) pairs."""
+        for i, T in enumerate(self.se3_vec):
+            t, q = T[..., :3], T[..., 3:]
+            for j, p in enumerate(self.point_vec):
+                # SE3 action: R * p + t
+                result = SO3.quat_action(q, p) + t
+
+                # Verify via compose with identity-rotation point
+                # T * (I, p) should give (R*p + t, R)
+                p_se3 = torch.cat([p, torch.tensor([[1.0, 0, 0, 0]], dtype=torch.float64)], dim=-1)
+                composed = self._se3_compose(T, p_se3)
+                self.assertTrue(
+                    torch.allclose(result, composed[..., :3], atol=1e-10),
+                    f"Point action inconsistency for se3_vec[{i}], point_vec[{j}]",
+                )
+
+    def test_inverse_action_roundtrip(self):
+        """T⁻¹ * (T * p) == p for all test vector pairs."""
+        for i, T in enumerate(self.se3_vec):
+            t, q = T[..., :3], T[..., 3:]
+            T_inv = self._se3_inverse(T)
+            t_inv, q_inv = T_inv[..., :3], T_inv[..., 3:]
+            for j, p in enumerate(self.point_vec):
+                Tp = SO3.quat_action(q, p) + t
+                p_rec = SO3.quat_action(q_inv, Tp) + t_inv
+                self.assertTrue(
+                    torch.allclose(p_rec, p, atol=1e-10),
+                    f"Inverse action roundtrip failed for se3_vec[{i}], point_vec[{j}]",
+                )
+
+    def test_exp_log_roundtrip_at_identity(self):
+        """exp(log(T)) == T at identity base point for all test vectors.
+
+        Skips when rotational norm ≥ π (log is not unique there)."""
+        eps = 1e-9
+        identity = torch.tensor([[0, 0, 0, 1.0, 0, 0, 0]], dtype=torch.float64)
+        for i, T in enumerate(self.se3_vec):
+            u = self.se3.logmap(identity, T)
+            rot_norm = self._rotational_norm(u)
+            if rot_norm > self.kPi * (1.0 - eps):
+                continue
+            T_rec = self.se3.expmap(identity, u)
+            error = self.se3.logmap(T, T_rec).square().sum()
+            self.assertTrue(
+                error < 1e-12,
+                f"exp(log(T)) roundtrip failed for se3_vec[{i}], error={error.item():.2e}",
+            )
+
+
 from flow_matching.utils.manifolds import SE3 as SE3_imported, Product, Euclidean
 
 
