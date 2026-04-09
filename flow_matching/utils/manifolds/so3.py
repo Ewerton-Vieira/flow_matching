@@ -327,6 +327,19 @@ class SO3(Manifold):
         """
         return u
 
+    def logmap_and_theta(self, x: Tensor, y: Tensor):
+        """
+        Logarithmic map returning both the rotation vector and the angle.
+        Reference: so3_reference.hpp:285-332 (logAndTheta)
+
+        Returns:
+            omega: (..., 3) rotation vector
+            theta: (..., 1) rotation angle = ||omega||
+        """
+        omega = self.logmap(x, y)
+        theta = omega.norm(dim=-1, keepdim=True)
+        return omega, theta
+
     def dist(self, x: Tensor, y: Tensor) -> Tensor:
         """Stable geodesic distance on SO(3) using relative quaternion and atan2."""
         Delta = self._relative_quat_shortest_with_pi_tiebreak(x, y)

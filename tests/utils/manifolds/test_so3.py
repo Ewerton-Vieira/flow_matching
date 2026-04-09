@@ -500,6 +500,49 @@ class TestSO3(unittest.TestCase):
         expected = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float64)
         self.assertTrue(torch.allclose(result, expected, atol=1e-12))
 
+    def test_logmap_and_theta_consistency(self):
+        """logmap_and_theta must return omega consistent with logmap, and theta = ||omega||."""
+        torch.manual_seed(303)
+        x = self.so3.projx(_rand_unit_quaternion(64))
+        y = self.so3.projx(_rand_unit_quaternion(64))
+        omega, theta = self.so3.logmap_and_theta(x, y)
+        omega_ref = self.so3.logmap(x, y)
+        self.assertTrue(
+            torch.allclose(omega, omega_ref, atol=1e-14),
+            "logmap_and_theta omega must match logmap",
+        )
+        theta_ref = omega.norm(dim=-1, keepdim=True)
+        self.assertTrue(
+            torch.allclose(theta, theta_ref, atol=1e-14),
+            "theta must equal ||omega||",
+        )
+
+    def test_logmap_and_theta_identity(self):
+        """logmap_and_theta(x, x) must return zeros and theta=0."""
+        torch.manual_seed(304)
+        x = self.so3.projx(_rand_unit_quaternion(16))
+        omega, theta = self.so3.logmap_and_theta(x, x)
+        self.assertTrue(
+            torch.allclose(omega, torch.zeros_like(omega), atol=1e-12),
+        )
+        self.assertTrue(
+            torch.allclose(theta, torch.zeros_like(theta), atol=1e-12),
+        )
+
+    def test_logmap_and_theta_known_angle(self):
+        """For a known rotation of angle α, theta must equal α."""
+        torch.manual_seed(305)
+        identity = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float64).expand(32, 4)
+        axis = _rand_unit_axis(32)
+        angles = torch.rand(32, 1, dtype=torch.float64) * (math.pi - 0.1)
+        omega_in = axis * angles
+        y = self.so3.expmap(identity, omega_in)
+        omega_out, theta = self.so3.logmap_and_theta(identity, y)
+        self.assertTrue(
+            torch.allclose(theta, angles, atol=1e-9),
+            f"theta must match input angle, max diff: {(theta - angles).abs().max()}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
