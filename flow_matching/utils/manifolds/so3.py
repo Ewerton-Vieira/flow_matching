@@ -91,6 +91,21 @@ class SO3(Manifold):
     })
 
     @staticmethod
+    def quat_action(q: Tensor, v: Tensor) -> Tensor:
+        """
+        Rotate 3D vector v by unit quaternion q = [w, x, y, z].
+
+        Equivalent to R(q) @ v but without building the 3×3 rotation matrix.
+        Uses the formula: result = v + 2w·(q_vec × v) + 2·(q_vec × (q_vec × v))
+
+        Reference: so3_reference.hpp:392-398 (operator* on points)
+        """
+        q_vec = q[..., 1:]   # (..., 3) imaginary part
+        w = q[..., :1]       # (..., 1) real part
+        t = 2.0 * torch.cross(q_vec, v, dim=-1)
+        return v + w * t + torch.cross(q_vec, t, dim=-1)
+
+    @staticmethod
     def hat(omega: Tensor) -> Tensor:
         """
         Hat operator: 3D vector to 3×3 skew-symmetric matrix.

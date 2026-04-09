@@ -466,6 +466,40 @@ class TestSO3(unittest.TestCase):
                                   [-2.0, 1.0, 0.0]]], dtype=torch.float64)
         self.assertTrue(torch.allclose(Omega, expected, atol=1e-15))
 
+    def test_quat_action_matches_rotation_matrix(self):
+        """quat_action(q, v) must match R(q) @ v."""
+        torch.manual_seed(302)
+        q = _rand_unit_quaternion(64)
+        q = SO3.normalize(q)
+        v = torch.randn(64, 3, dtype=torch.float64)
+        result = SO3.quat_action(q, v)
+        w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+        R = torch.stack([
+            torch.stack([1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)], dim=-1),
+            torch.stack([2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)], dim=-1),
+            torch.stack([2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)], dim=-1),
+        ], dim=-2)
+        expected = (R @ v.unsqueeze(-1)).squeeze(-1)
+        self.assertTrue(
+            torch.allclose(result, expected, atol=1e-12),
+            f"quat_action must match rotation matrix, max diff: {(result - expected).abs().max()}",
+        )
+
+    def test_quat_action_identity(self):
+        """Identity quaternion [1,0,0,0] should not change the vector."""
+        v = torch.randn(16, 3, dtype=torch.float64)
+        identity = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float64).expand(16, 4)
+        result = SO3.quat_action(identity, v)
+        self.assertTrue(torch.allclose(result, v, atol=1e-15))
+
+    def test_quat_action_90_deg_z(self):
+        """90° rotation about z-axis: [1,0,0] -> [0,1,0]."""
+        q_z90 = torch.tensor([[math.cos(math.pi/4), 0.0, 0.0, math.sin(math.pi/4)]], dtype=torch.float64)
+        v = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64)
+        result = SO3.quat_action(q_z90, v)
+        expected = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float64)
+        self.assertTrue(torch.allclose(result, expected, atol=1e-12))
+
 
 if __name__ == "__main__":
     unittest.main()
