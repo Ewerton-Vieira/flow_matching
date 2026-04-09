@@ -93,5 +93,54 @@ class TestSE3(unittest.TestCase):
         self.assertTrue(torch.allclose(d[..., 3:], rot_dist, atol=1e-12))
 
 
+    def test_expmap_zero_is_identity(self):
+        """expmap(x, 0) must return x."""
+        torch.manual_seed(410)
+        x = self.se3.projx(_rand_se3(32))
+        u = torch.zeros(32, 6, dtype=torch.float64)
+        y = self.se3.expmap(x, u)
+        self.assertTrue(torch.allclose(y[..., :3], x[..., :3], atol=1e-12))
+        q_diff = self.so3.dist(y[..., 3:], x[..., 3:])
+        self.assertTrue(torch.allclose(q_diff, torch.zeros_like(q_diff), atol=1e-12))
+
+    def test_expmap_pure_translation(self):
+        """With ω=0, expmap should add translation directly (V=I when θ=0)."""
+        torch.manual_seed(411)
+        x = self.se3.projx(_rand_se3(32))
+        v = torch.randn(32, 3, dtype=torch.float64) * 0.5
+        u = torch.cat([v, torch.zeros(32, 3, dtype=torch.float64)], dim=-1)
+        y = self.se3.expmap(x, u)
+        q_diff = self.so3.dist(y[..., 3:], x[..., 3:])
+        self.assertTrue(torch.allclose(q_diff, torch.zeros_like(q_diff), atol=1e-12))
+        R_x_v = SO3.quat_action(x[..., 3:], v)
+        expected_t = x[..., :3] + R_x_v
+        self.assertTrue(torch.allclose(y[..., :3], expected_t, atol=1e-10))
+
+    def test_expmap_pure_rotation(self):
+        """With v=0, expmap should only rotate (translation unchanged)."""
+        torch.manual_seed(412)
+        x = self.se3.projx(_rand_se3(32))
+        omega = torch.randn(32, 3, dtype=torch.float64) * 0.5
+        u = torch.cat([torch.zeros(32, 3, dtype=torch.float64), omega], dim=-1)
+        y = self.se3.expmap(x, u)
+        self.assertTrue(torch.allclose(y[..., :3], x[..., :3], atol=1e-10))
+        q_expected = self.so3.expmap(x[..., 3:], omega)
+        q_diff = self.so3.dist(y[..., 3:], q_expected)
+        self.assertTrue(torch.allclose(q_diff, torch.zeros_like(q_diff), atol=1e-10))
+
+    def test_expmap_differs_from_product_manifold(self):
+        """SE3 expmap must NOT equal naive R³ + SO3 expmap (the coupling matters)."""
+        torch.manual_seed(413)
+        x = self.se3.projx(_rand_se3(32))
+        u = torch.randn(32, 6, dtype=torch.float64) * 0.5
+        y_se3 = self.se3.expmap(x, u)
+        v, omega = u[..., :3], u[..., 3:]
+        t_naive = x[..., :3] + SO3.quat_action(x[..., 3:], v)
+        q_naive = self.so3.expmap(x[..., 3:], omega)
+        y_naive = torch.cat([t_naive, q_naive], dim=-1)
+        t_diff = (y_se3[..., :3] - y_naive[..., :3]).abs().max()
+        self.assertTrue(t_diff > 1e-6, f"SE3 expmap must differ from naive, but max diff = {t_diff}")
+
+
 if __name__ == "__main__":
     unittest.main()
