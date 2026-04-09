@@ -433,5 +433,39 @@ class TestSO3(unittest.TestCase):
         )
 
 
+    def test_hat_skew_symmetric(self):
+        """hat(ω) must be skew-symmetric: Ω + Ωᵀ = 0."""
+        torch.manual_seed(300)
+        omega = torch.randn(64, 3, dtype=torch.float64)
+        Omega = SO3.hat(omega)
+        self.assertEqual(Omega.shape, (64, 3, 3))
+        self.assertTrue(
+            torch.allclose(Omega + Omega.transpose(-1, -2), torch.zeros_like(Omega), atol=1e-15),
+            "hat(ω) must be skew-symmetric",
+        )
+
+    def test_hat_cross_product_equivalence(self):
+        """hat(ω) @ v must equal ω × v for all v."""
+        torch.manual_seed(301)
+        omega = torch.randn(64, 3, dtype=torch.float64)
+        v = torch.randn(64, 3, dtype=torch.float64)
+        Omega = SO3.hat(omega)
+        hat_v = (Omega @ v.unsqueeze(-1)).squeeze(-1)
+        cross_v = torch.cross(omega, v, dim=-1)
+        self.assertTrue(
+            torch.allclose(hat_v, cross_v, atol=1e-14),
+            "hat(ω) @ v must equal ω × v",
+        )
+
+    def test_hat_known_values(self):
+        """Verify hat against Sophus so3_reference.hpp:804-812."""
+        omega = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64)
+        Omega = SO3.hat(omega)
+        expected = torch.tensor([[[0.0, -3.0, 2.0],
+                                  [3.0, 0.0, -1.0],
+                                  [-2.0, 1.0, 0.0]]], dtype=torch.float64)
+        self.assertTrue(torch.allclose(Omega, expected, atol=1e-15))
+
+
 if __name__ == "__main__":
     unittest.main()

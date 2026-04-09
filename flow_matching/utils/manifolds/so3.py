@@ -91,6 +91,28 @@ class SO3(Manifold):
     })
 
     @staticmethod
+    def hat(omega: Tensor) -> Tensor:
+        """
+        Hat operator: 3D vector to 3×3 skew-symmetric matrix.
+        Reference: so3_reference.hpp:804-812
+
+        hat(ω) = [  0    -ω[2]   ω[1] ]
+                 [  ω[2]   0    -ω[0] ]
+                 [ -ω[1]  ω[0]    0   ]
+
+        Such that hat(ω) @ v = ω × v for all v.
+        """
+        o0 = omega[..., 0]
+        o1 = omega[..., 1]
+        o2 = omega[..., 2]
+        z = torch.zeros_like(o0)
+        return torch.stack([
+            torch.stack([z, -o2, o1], dim=-1),
+            torch.stack([o2, z, -o0], dim=-1),
+            torch.stack([-o1, o0, z], dim=-1),
+        ], dim=-2)
+
+    @staticmethod
     def product(q1: Tensor, q2: Tensor) -> Tensor:
         """Hamilton product, scalar-first [w, x, y, z], vectorized."""
         w1 = q1[..., :1]
