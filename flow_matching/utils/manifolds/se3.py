@@ -143,5 +143,91 @@ class SE3(Manifold):
         t_new = t_x + t_delta
         return torch.cat([t_new, q_new], dim=-1)
 
+    def _so3_logmap_full(self, q_x: Tensor, q_y: Tensor):
+        """
+        SO3 log map returning all intermediate values for reuse.
+        Reference: so3_reference.hpp:285-332 (logAndTheta)
+
+        Returns: (omega, theta, sin_half, cos_half)
+            omega (..., 3): rotation vector
+            theta (..., 1): rotation angle
+            sin_half (..., 1): sin(θ/2) = ||Delta_vec||
+            cos_half (..., 1): cos(θ/2) = Delta_w
+        """
+        eps = self.EPS[q_x.dtype]
+
+        Delta = self._so3._relative_quat_shortest_with_pi_tiebreak(q_x, q_y)
+
+        cos_half = Delta[..., 0:1]   # w = cos(θ/2)
+        v = Delta[..., 1:]           # sin(θ/2) · axis
+        sin_half = v.norm(dim=-1, keepdim=True)  # sin(θ/2)
+
+        s2 = sin_half * sin_half
+        scale_series = (2.0
+                        + (1.0 / 3.0) * s2
+                        + (3.0 / 20.0) * s2 * s2
+                        + (5.0 / 56.0) * s2 * s2 * s2)
+
+        theta = 2.0 * torch.atan2(sin_half, cos_half)
+        scale_general = torch.where(sin_half > eps, theta / sin_half, torch.zeros_like(sin_half))
+
+        s_thresh = min(eps * 1e3, 1e-4)
+        scale = torch.where(sin_half < s_thresh, scale_series, scale_general)
+
+        omega = scale * v
+        return omega, theta, sin_half, cos_half
+
+    def _left_jacobian_inv_act(self, omega: Tensor, v: Tensor, theta: Tensor,
+                                sin_half: Tensor, cos_half: Tensor) -> Tensor:
+        """
+        Compute V⁻¹·v via cross products (no 3×3 matrix).
+        Reference: so3_reference.hpp:594-619 (leftJacobianInverse)
+
+        V⁻¹·v = v - 0.5·(ω×v) + c·(ω×(ω×v))
+        where c = (1 - 0.5·θ·cos(θ/2)/sin(θ/2)) / θ²
+        Small-angle: c = 1/12 (so3_reference.hpp lines 606-607)
+
+        Reuses sin(θ/2) and cos(θ/2) from _so3_logmap_full.
+        """
+        eps = self.EPS[omega.dtype]
+        theta_sq = theta * theta
+
+        # Small-angle: so3_reference.hpp lines 606-607
+        c_small = torch.full_like(theta, 1.0 / 12.0)
+
+        # General: so3_reference.hpp lines 613-616
+        safe_sin_half = torch.where(sin_half.abs() > eps, sin_half, torch.ones_like(sin_half))
+        half_theta_cot_half = 0.5 * theta * cos_half / safe_sin_half
+        c_general = (1.0 - half_theta_cot_half) / theta_sq
+
+        small = theta_sq < eps * eps
+        c = torch.where(small, c_small, c_general)
+
+        cross1 = torch.cross(omega, v, dim=-1)
+        cross2 = torch.cross(omega, cross1, dim=-1)
+        return v - 0.5 * cross1 + c * cross2
+
     def logmap(self, x: Tensor, y: Tensor) -> Tensor:
-        raise NotImplementedError("SE3.logmap will be implemented in Task 6")
+        """
+        SE(3) logarithmic map: log(x⁻¹ * y).
+        Reference: se3_reference.hpp:237-253 (log), lines 222-224 (inverse)
+
+        Given x = (t_x, q_x) and y = (t_y, q_y):
+            ω, θ, sin_half, cos_half = SO3.logmap_full(q_x, q_y)
+            t_rel = R(q_x)ᵀ · (t_y - t_x)       (from x⁻¹ * y)
+            v = V⁻¹(ω) · t_rel                   (se3 line 252)
+        """
+        t_x, q_x = x[..., :3], x[..., 3:]
+        t_y, q_y = y[..., :3], y[..., 3:]
+
+        # SO3 logmap with all intermediate values
+        omega, theta, sin_half, cos_half = self._so3_logmap_full(q_x, q_y)
+
+        # R_xᵀ · (t_y - t_x) via conjugate quaternion rotation
+        dt = t_y - t_x
+        t_rel = SO3.quat_action(SO3._qconj(q_x), dt)
+
+        # V⁻¹ · t_rel via cross products, reusing half-angle values
+        v = self._left_jacobian_inv_act(omega, t_rel, theta, sin_half, cos_half)
+
+        return torch.cat([v, omega], dim=-1)

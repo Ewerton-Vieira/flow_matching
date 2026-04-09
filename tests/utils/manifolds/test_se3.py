@@ -142,5 +142,76 @@ class TestSE3(unittest.TestCase):
         self.assertTrue(t_diff > 1e-6, f"SE3 expmap must differ from naive, but max diff = {t_diff}")
 
 
+    def test_logmap_identity(self):
+        """logmap(x, x) must return zero twist."""
+        torch.manual_seed(420)
+        x = self.se3.projx(_rand_se3(32))
+        u = self.se3.logmap(x, x)
+        self.assertTrue(torch.allclose(u, torch.zeros_like(u), atol=1e-10))
+
+    def test_exp_log_roundtrip(self):
+        """expmap(x, logmap(x, y)) must recover y."""
+        torch.manual_seed(421)
+        x = self.se3.projx(_rand_se3(64))
+        y = self.se3.projx(_rand_se3(64))
+        u = self.se3.logmap(x, y)
+        y_rec = self.se3.expmap(x, u)
+        self.assertTrue(
+            torch.allclose(y_rec[..., :3], y[..., :3], atol=1e-8),
+            f"Translation roundtrip failed, max diff: {(y_rec[..., :3] - y[..., :3]).abs().max()}",
+        )
+        q_diff = self.so3.dist(y_rec[..., 3:], y[..., 3:])
+        self.assertTrue(
+            torch.allclose(q_diff, torch.zeros_like(q_diff), atol=1e-8),
+            f"Rotation roundtrip failed, max diff: {q_diff.max()}",
+        )
+
+    def test_log_exp_roundtrip_small_twist(self):
+        """logmap(x, expmap(x, u)) must recover u for small u."""
+        torch.manual_seed(422)
+        x = self.se3.projx(_rand_se3(64))
+        u = torch.randn(64, 6, dtype=torch.float64) * 0.1
+        y = self.se3.expmap(x, u)
+        u_rec = self.se3.logmap(x, y)
+        self.assertTrue(
+            torch.allclose(u_rec, u, atol=1e-8),
+            f"Small twist roundtrip failed, max diff: {(u_rec - u).abs().max()}",
+        )
+
+    def test_log_exp_roundtrip_large_twist(self):
+        """logmap(x, expmap(x, u)) must recover u for moderate u."""
+        torch.manual_seed(423)
+        x = self.se3.projx(_rand_se3(64))
+        v = torch.randn(64, 3, dtype=torch.float64)
+        axis = torch.randn(64, 3, dtype=torch.float64)
+        axis = axis / axis.norm(dim=-1, keepdim=True)
+        angle = torch.rand(64, 1, dtype=torch.float64) * (math.pi - 0.2)
+        omega = axis * angle
+        u = torch.cat([v, omega], dim=-1)
+        y = self.se3.expmap(x, u)
+        u_rec = self.se3.logmap(x, y)
+        self.assertTrue(
+            torch.allclose(u_rec, u, atol=1e-7),
+            f"Large twist roundtrip failed, max diff: {(u_rec - u).abs().max()}",
+        )
+
+    def test_logmap_differs_from_product_manifold(self):
+        """SE3 logmap must NOT equal naive R³ + SO3 logmap (the coupling matters)."""
+        torch.manual_seed(424)
+        x = self.se3.projx(_rand_se3(32))
+        u = torch.randn(32, 6, dtype=torch.float64) * 0.5
+        y = self.se3.expmap(x, u)
+        u_se3 = self.se3.logmap(x, y)
+        omega_naive = self.so3.logmap(x[..., 3:], y[..., 3:])
+        dt = y[..., :3] - x[..., :3]
+        v_naive = SO3.quat_action(SO3._qconj(x[..., 3:]), dt)
+        u_naive = torch.cat([v_naive, omega_naive], dim=-1)
+        self.assertTrue(
+            torch.allclose(u_se3[..., 3:], u_naive[..., 3:], atol=1e-10),
+        )
+        v_diff = (u_se3[..., :3] - u_naive[..., :3]).abs().max()
+        self.assertTrue(v_diff > 1e-6, f"SE3 logmap must differ from naive, but max diff = {v_diff}")
+
+
 if __name__ == "__main__":
     unittest.main()
