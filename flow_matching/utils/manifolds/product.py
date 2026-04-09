@@ -11,6 +11,7 @@ import warnings
 # Import directly from modules to avoid circular imports with `flow_matching.utils.manifolds.__init__`.
 from flow_matching.utils.manifolds.manifold import Euclidean, Manifold
 from flow_matching.utils.manifolds.so3 import SO3
+from flow_matching.utils.manifolds.se3 import SE3
 from flow_matching.utils.manifolds.torus import FlatTorus
 from flow_matching.utils.manifolds.sphere import Sphere
 
@@ -65,7 +66,12 @@ class Product(Manifold):
                         raise ValueError("SO3 manifold must have state_dim == 4")
                     if td != 3:
                         raise ValueError("SO3 manifold must have tangent_dim == 3")
-                
+                if isinstance(m, SE3):
+                    if sd != 7:
+                        raise ValueError("SE3 manifold must have state_dim == 7")
+                    if td != 6:
+                        raise ValueError("SE3 manifold must have tangent_dim == 6")
+
                 norm_specs.append((m, int(sd), int(td)))
             else:
                 raise ValueError(

@@ -290,5 +290,47 @@ class TestSE3(unittest.TestCase):
         self.assertTrue(torch.allclose(omega_norm, d[..., 3:], atol=1e-9))
 
 
+from flow_matching.utils.manifolds import SE3 as SE3_imported, Product, Euclidean
+
+
+class TestSE3Integration(unittest.TestCase):
+    def test_se3_importable_from_package(self):
+        """SE3 must be importable from flow_matching.utils.manifolds."""
+        self.assertIs(SE3_imported, SE3)
+
+    def test_product_with_se3(self):
+        """Product(Euclidean(2), SE3()) must work with state_dim=7, tangent_dim=6."""
+        prod = Product(input_dim=9, manifolds=[
+            (Euclidean(), 2),
+            (SE3(), 7, 6),
+        ])
+        self.assertEqual(prod.total_state_dim, 9)
+        self.assertEqual(prod.total_tangent_dim, 8)
+
+    def test_product_se3_expmap(self):
+        """Product expmap must delegate correctly to SE3."""
+        torch.manual_seed(440)
+        prod = Product(input_dim=9, manifolds=[
+            (Euclidean(), 2),
+            (SE3(), 7, 6),
+        ])
+        x = torch.randn(8, 9, dtype=torch.float64)
+        x[..., 5:9] = x[..., 5:9] / x[..., 5:9].norm(dim=-1, keepdim=True)
+        u = torch.randn(8, 8, dtype=torch.float64) * 0.3
+        y = prod.expmap(x, u)
+        self.assertEqual(y.shape, (8, 9))
+        self.assertTrue(torch.allclose(y[..., :2], x[..., :2] + u[..., :2], atol=1e-12))
+        se3 = SE3()
+        y_se3 = se3.expmap(x[..., 2:], u[..., 2:])
+        self.assertTrue(torch.allclose(y[..., 2:], y_se3, atol=1e-12))
+
+    def test_product_se3_validation(self):
+        """Product must reject SE3 with wrong state_dim or tangent_dim."""
+        with self.assertRaises(ValueError):
+            Product(input_dim=6, manifolds=[(SE3(), 6, 6)])
+        with self.assertRaises(ValueError):
+            Product(input_dim=7, manifolds=[(SE3(), 7, 7)])
+
+
 if __name__ == "__main__":
     unittest.main()

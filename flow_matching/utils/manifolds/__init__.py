@@ -10,6 +10,7 @@ from .torus import FlatTorus
 from .product import Product
 from .utils import geodesic
 from .so3 import SO3
+from .se3 import SE3
 
 __all__ = [
     "Euclidean",
@@ -18,5 +19,6 @@ __all__ = [
     "FlatTorus",
     "geodesic",
     "Product",
-    "SO3"
+    "SO3",
+    "SE3",
 ]

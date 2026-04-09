@@ -16,7 +16,7 @@ from flow_matching.path.path_sample import PathSample
 from flow_matching.path.scheduler import ConvexScheduler
 from flow_matching.utils import expand_tensor_like
 
-from flow_matching.utils.manifolds import geodesic, Manifold, Product, SO3
+from flow_matching.utils.manifolds import geodesic, Manifold, Product, SO3, SE3
 
 
 class GeodesicProbPath(ProbPath):
@@ -70,7 +70,7 @@ class GeodesicProbPath(ProbPath):
 
         self.has_so3 = False
 
-        if (isinstance(self.manifold, Product) and len([m for m in self.manifold.manifolds if isinstance(m, SO3)]) > 1) or isinstance(self.manifold, SO3):
+        if (isinstance(self.manifold, Product) and len([m for m in self.manifold.manifolds if isinstance(m, (SO3, SE3))]) > 0) or isinstance(self.manifold, (SO3, SE3)):
             self.has_so3 = True
 
     def _ambient_space_sample(self, x_0: Tensor, x_1: Tensor, t: Tensor) -> PathSample:
