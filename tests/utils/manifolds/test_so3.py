@@ -544,5 +544,54 @@ class TestSO3(unittest.TestCase):
         )
 
 
+    def test_to_euler_inverts_from_euler(self):
+        """to_euler should invert from_euler away from gimbal lock."""
+        torch.manual_seed(7)
+        N = 256
+        # Keep |pitch| bounded away from π/2 to avoid gimbal-lock degeneracy.
+        yaw = (torch.rand(N, dtype=torch.float64) - 0.5) * 2 * math.pi
+        pitch = (torch.rand(N, dtype=torch.float64) - 0.5) * 2 * (math.pi * 0.4)
+        roll = (torch.rand(N, dtype=torch.float64) - 0.5) * 2 * math.pi
+
+        for order, axes in [
+            ("zyx", (yaw, pitch, roll)),
+            ("xyz", (roll, pitch, yaw)),
+        ]:
+            angles = torch.stack(axes, dim=-1)
+            q = SO3.from_euler(angles, order=order)
+            rec = SO3.to_euler(q, order=order)
+            self.assertTrue(
+                torch.allclose(rec, angles, atol=1e-9),
+                f"{order} roundtrip failed: max diff {(rec - angles).abs().max()}",
+            )
+
+    def test_to_euler_identity(self):
+        """Identity quaternion -> zero Euler angles in both orders."""
+        q_id = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float64)
+        for order in ("zyx", "xyz"):
+            ang = SO3.to_euler(q_id, order=order)
+            self.assertTrue(torch.allclose(ang, torch.zeros(3, dtype=torch.float64), atol=1e-12))
+
+    def test_to_euler_quaternion_roundtrip(self):
+        """from_euler(to_euler(q)) should recover q (up to antipodal sign), even near gimbal lock."""
+        torch.manual_seed(11)
+        q = _rand_unit_quaternion(128)
+        for order in ("zyx", "xyz"):
+            angles = SO3.to_euler(q, order=order)
+            q_rec = SO3.from_euler(angles, order=order)
+            self.assertTrue(
+                _canon_equiv(self.so3, q, q_rec, atol=1e-8),
+                f"{order}: quaternion roundtrip via Euler failed",
+            )
+
+    def test_to_euler_degrees_flag(self):
+        """degrees=True should scale output by 180/π."""
+        torch.manual_seed(13)
+        q = _rand_unit_quaternion(16)
+        rad = SO3.to_euler(q, order="zyx", degrees=False)
+        deg = SO3.to_euler(q, order="zyx", degrees=True)
+        self.assertTrue(torch.allclose(deg, rad * (180.0 / math.pi), atol=1e-9))
+
+
 if __name__ == "__main__":
     unittest.main()

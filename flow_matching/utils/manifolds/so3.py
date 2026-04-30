@@ -233,6 +233,45 @@ class SO3(Manifold):
         return SO3.canon(q)
 
     @staticmethod
+    def to_euler(q: Tensor, order: str = "zyx", degrees: bool = False) -> Tensor:
+        """
+        Inverse of :meth:`from_euler`: convert a unit quaternion [qw, qx, qy, qz]
+        to Euler angles.
+
+        q: (..., 4)
+        Returns angles (..., 3) ordered the same way `from_euler` consumes them:
+          - order='zyx': [yaw(z), pitch(y), roll(x)]
+          - order='xyz': [roll(x), pitch(y), yaw(z)]
+
+        Pitch is clamped to [-π/2, π/2]; near gimbal lock (|pitch| ≈ π/2) the
+        roll/yaw split is ill-defined and the values returned satisfy
+        from_euler(to_euler(q)) ≈ q only up to that ambiguity.
+        """
+        if q.shape[-1] != 4:
+            raise ValueError("q must have shape (..., 4)")
+
+        q = SO3.normalize(q)
+        w, x, y, z = q.unbind(-1)
+
+        order = order.lower()
+        if order == "zyx":
+            roll = torch.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+            pitch = torch.asin(torch.clamp(2.0 * (w * y - x * z), -1.0, 1.0))
+            yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+            angles = torch.stack((yaw, pitch, roll), dim=-1)
+        elif order == "xyz":
+            roll = torch.atan2(2.0 * (w * x - y * z), 1.0 - 2.0 * (x * x + y * y))
+            pitch = torch.asin(torch.clamp(2.0 * (w * y + x * z), -1.0, 1.0))
+            yaw = torch.atan2(2.0 * (w * z - x * y), 1.0 - 2.0 * (y * y + z * z))
+            angles = torch.stack((roll, pitch, yaw), dim=-1)
+        else:
+            raise ValueError("order must be 'zyx' or 'xyz'")
+
+        if degrees:
+            angles = angles * (180.0 / torch.pi)
+        return angles
+
+    @staticmethod
     def canon(q: Tensor) -> Tensor:
         """
         Canonical representative with stable tie-break:
