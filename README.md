@@ -1,6 +1,6 @@
 <div align="center">
 
-# Flow Matching
+# Product Manifolds for Flow Matching
 
 [![arXiv](assets/arXiv-2412.06264-red.svg)](https://arxiv.org/abs/2412.06264)
 [![CI](https://github.com/facebookresearch/flow_matching/actions/workflows/ci.yaml/badge.svg)](https://github.com/facebookresearch/flow_matching/actions/workflows/ci.yaml)
